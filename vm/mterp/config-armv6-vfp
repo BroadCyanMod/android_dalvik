@@ -13,34 +13,30 @@
 # limitations under the License.
 
 #
-# Configuration for ARMv6 targets with VFP support.
+# Configuration for ARMv5TE targets with VFP support.
 #
 # This is just ARMv5TE with replacements for the handlers that can benefit
 # from floating-point instructions.  Essentially all float/double
 # operations except for "remainder" and conversions to/from 64-bit ints.
 #
 
-handler-style computed-goto
 handler-size 64
 
 # source for the instruction table stub
 asm-stub armv5te/stub.S
 
-# source for alternate entry stub
-asm-alt-stub armv5te/alt_stub.S
-
 # file header and basic definitions
-import c/header.cpp
+import c/header.c
 import armv5te/header.S
 
 # C pre-processor defines for stub C instructions
-import cstubs/stubdefs.cpp
+import cstubs/stubdefs.c
 
 # highly-platform-specific defs
 import armv5te/platform.S
 
 # common defs for the C helpers; include this before the instruction handlers
-import c/opcommon.cpp
+import c/opcommon.c
 
 # arch-specific entry point to interpreter
 import armv5te/entry.S
@@ -98,11 +94,11 @@ op-end
 
 # "helper" code for C; include if you use any of the C stubs (this generates
 # object code, so it's normally excluded)
-##import c/gotoTargets.cpp
+##import c/gotoTargets.c
 
-# end of defs; include this when cstubs/stubdefs.cpp is included
-import cstubs/enddefs.cpp
+# end of defs; include this when cstubs/stubdefs.c is included
+import cstubs/enddefs.c
 
 # common subroutines for asm
 import armv5te/footer.S
-import armv5te/debug.cpp
+import armv5te/debug.c
