@@ -66,7 +66,7 @@ static bool mustWrapException(const Method* method, const Object* throwable);
 ClassObject* dvmGenerateProxyClass(StringObject* str, ArrayObject* interfaces,
     Object* loader)
 {
-    int result = -1;
+    ClassObject* result = NULL;
     ArrayObject* throws = NULL;
 
     char* nameStr = dvmCreateCstrFromString(str);
@@ -75,7 +75,7 @@ ClassObject* dvmGenerateProxyClass(StringObject* str, ArrayObject* interfaces,
         return NULL;
     }
 
-    LOGV("+++ Generate proxy class '%s' %p from %d interface classes",
+    ALOGV("+++ Generate proxy class '%s' %p from %d interface classes",
         nameStr, loader, interfaces->length);
 
 
@@ -190,7 +190,7 @@ ClassObject* dvmGenerateProxyClass(StringObject* str, ArrayObject* interfaces,
      */
     newClass->status = CLASS_LOADED;
     if (!dvmLinkClass(newClass)) {
-        LOGD("Proxy class link failed");
+        ALOGD("Proxy class link failed");
         goto bail;
     }
 
@@ -200,19 +200,18 @@ ClassObject* dvmGenerateProxyClass(StringObject* str, ArrayObject* interfaces,
      * with a duplicate name.
      */
     if (!dvmAddClassToHash(newClass)) {
-        LOGE("ERROR: attempted to generate %s more than once",
+        ALOGE("ERROR: attempted to generate %s more than once",
             newClass->descriptor);
         goto bail;
     }
 
-    result = 0;
+    result = newClass;
 
 bail:
     free(nameStr);
-    if (result != 0) {
+    if (result == NULL) {
         /* must free innards explicitly if we didn't finish linking */
         dvmFreeClassInnards(newClass);
-        newClass = NULL;
         if (!dvmCheckException(dvmThreadSelf())) {
             /* throw something */
             dvmThrowRuntimeException(NULL);
@@ -223,7 +222,7 @@ bail:
     dvmReleaseTrackedAlloc((Object*) throws, NULL);
     dvmReleaseTrackedAlloc((Object*) newClass, NULL);
 
-    return newClass;
+    return result;
 }
 
 
@@ -329,9 +328,9 @@ static bool gatherMethods(ArrayObject* interfaces, Method*** pMethods,
     if (actualCount < 0)
         goto bail;
 
-    //LOGI("gathered methods:");
+    //ALOGI("gathered methods:");
     //for (i = 0; i < actualCount; i++) {
-    //    LOGI(" %d: %s.%s",
+    //    ALOGI(" %d: %s.%s",
     //        i, methods[i]->clazz->descriptor, methods[i]->name);
     //}
 
@@ -419,7 +418,7 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
                  * type or void, the types must match exactly, or we throw
                  * an exception now.
                  */
-                LOGV("MATCH on %s.%s and %s.%s",
+                ALOGV("MATCH on %s.%s and %s.%s",
                     allMethods[i]->clazz->descriptor, allMethods[i]->name,
                     allMethods[j]->clazz->descriptor, allMethods[j]->name);
                 dupe = true;
@@ -437,7 +436,7 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
          */
         if (dupe) {
             if (best) {
-                LOGV("BEST %d %s.%s -> %d", i,
+                ALOGV("BEST %d %s.%s -> %d", i,
                     allMethods[i]->clazz->descriptor, allMethods[i]->name,
                     outCount);
 
@@ -458,7 +457,7 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
                     if (dvmCompareMethodNamesAndParameterProtos(allMethods[i],
                             allMethods[j]) == 0)
                     {
-                        LOGV("DEL %d %s.%s", j,
+                        ALOGV("DEL %d %s.%s", j,
                             allMethods[j]->clazz->descriptor,
                             allMethods[j]->name);
 
@@ -492,7 +491,7 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
                             gDvm.classJavaLangClassArray, commonCount,
                             ALLOC_DEFAULT);
                     if (throwArray == NULL) {
-                        LOGE("common-throw array alloc failed");
+                        ALOGE("common-throw array alloc failed");
                         return -1;
                     }
 
@@ -514,13 +513,13 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
 
                 dvmPointerSetFree(commonThrows);
             } else {
-                LOGV("BEST not %d", i);
+                ALOGV("BEST not %d", i);
             }
         } else {
             /*
              * Singleton.  Copy the entry and NULL it out.
              */
-            LOGV("COPY singleton %d %s.%s -> %d", i,
+            ALOGV("COPY singleton %d %s.%s -> %d", i,
                 allMethods[i]->clazz->descriptor, allMethods[i]->name,
                 outCount);
 
@@ -544,7 +543,7 @@ static int copyWithoutDuplicates(Method** allMethods, int allCount,
      */
     for (i = 0; i < allCount; i++) {
         if (allMethods[i] != NULL) {
-            LOGV("BAD DUPE: %d %s.%s", i,
+            ALOGV("BAD DUPE: %d %s.%s", i,
                 allMethods[i]->clazz->descriptor, allMethods[i]->name);
             dvmThrowIllegalArgumentException(
                 "incompatible return types in proxied interfaces");
@@ -893,11 +892,11 @@ static void proxyInvoker(const u4* args, JValue* pResult,
     invoke = dvmFindVirtualMethodHierByDescriptor(handler->clazz, "invoke",
             "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;");
     if (invoke == NULL) {
-        LOGE("Unable to find invoke()");
+        ALOGE("Unable to find invoke()");
         dvmAbort();
     }
 
-    LOGV("invoke: %s.%s, this=%p, handler=%s",
+    ALOGV("invoke: %s.%s, this=%p, handler=%s",
         method->clazz->descriptor, method->name,
         thisObj, handler->clazz->descriptor);
 
@@ -925,12 +924,12 @@ static void proxyInvoker(const u4* args, JValue* pResult,
     returnType = dvmGetBoxedReturnType(method);
     if (returnType == NULL) {
         char* desc = dexProtoCopyMethodDescriptor(&method->prototype);
-        LOGE("Could not determine return type for '%s'", desc);
+        ALOGE("Could not determine return type for '%s'", desc);
         free(desc);
         assert(dvmCheckException(self));
         goto bail;
     }
-    LOGV("  return type will be %s", returnType->descriptor);
+    ALOGV("  return type will be %s", returnType->descriptor);
 
     /*
      * Convert "args" array into Object[] array, using the method

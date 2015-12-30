@@ -250,7 +250,7 @@ static void checkMergeTab()
     for (i = 0; i < kRegTypeMAX; i++) {
         for (j = i; j < kRegTypeMAX; j++) {
             if (gDvmMergeTab[i][j] != gDvmMergeTab[j][i]) {
-                LOGE("Symmetry violation: %d,%d vs %d,%d", i, j, j, i);
+                ALOGE("Symmetry violation: %d,%d vs %d,%d", i, j, j, i);
                 dvmAbort();
             }
         }
@@ -459,7 +459,7 @@ UninitInstanceMap* dvmCreateUninitInstanceMap(const Method* meth,
         int width = dvmInsnGetWidth(insnFlags, addr);
 
         Opcode opcode = dexOpcodeFromCodeUnit(*insns);
-        if (opcode == OP_NEW_INSTANCE || opcode == OP_NEW_INSTANCE_JUMBO)
+        if (opcode == OP_NEW_INSTANCE)
             uninitMap->map[idx++].addr = addr;
 
         addr += width;
@@ -629,13 +629,13 @@ static ClassObject* lookupClassByDescriptor(const Method* meth,
      * allows the verifier to process the class successfully.
      */
 
-    //LOGI("Looking up '%s'", typeStr);
+    //ALOGI("Looking up '%s'", typeStr);
     ClassObject* clazz;
     clazz = dvmFindClassNoInit(pDescriptor, meth->clazz->classLoader);
     if (clazz == NULL) {
         dvmClearOptException(dvmThreadSelf());
         if (strchr(pDescriptor, '$') != NULL) {
-            LOGV("VFY: unable to find class referenced in signature (%s)",
+            ALOGV("VFY: unable to find class referenced in signature (%s)",
                 pDescriptor);
         } else {
             LOG_VFY("VFY: unable to find class referenced in signature (%s)",
@@ -1136,7 +1136,7 @@ static Method* verifyInvocationArgs(const Method* meth,
             std::string dotMethClass =
                 dvmHumanReadableDescriptor(meth->clazz->descriptor);
 
-            LOGI("Could not find method %s.%s, referenced from method %s.%s",
+            ALOGI("Could not find method %s.%s, referenced from method %s.%s",
                     dotMissingClass.c_str(), methodName,
                     dotMethClass.c_str(), meth->name);
         }
@@ -1388,7 +1388,7 @@ static ClassObject* getFieldClass(const Method* meth, const Field* field)
 
     if (fieldClass == NULL) {
         dvmClearOptException(dvmThreadSelf());
-        LOGV("VFY: unable to find class '%s' for field %s.%s, trying Object",
+        ALOGV("VFY: unable to find class '%s' for field %s.%s, trying Object",
             field->signature, meth->clazz->descriptor, field->name);
         fieldClass = gDvm.classJavaLangObject;
     } else {
@@ -1534,7 +1534,7 @@ static void setRegisterType(RegisterLine* registerLine, u4 vdst,
     case kRegTypeLongHi:
     case kRegTypeDoubleHi:
         /* should never set these explicitly */
-        LOGE("BUG: explicit set of high register type");
+        ALOGE("BUG: explicit set of high register type");
         dvmAbort();
         break;
 
@@ -1559,7 +1559,7 @@ static void setRegisterType(RegisterLine* registerLine, u4 vdst,
         /* bad type - fall through */
 
     case kRegTypeConflict:      // should only be set during a merge
-        LOGE("BUG: set register to unknown type %d", newType);
+        ALOGE("BUG: set register to unknown type %d", newType);
         dvmAbort();
         break;
     }
@@ -1589,7 +1589,7 @@ static void verifyRegisterType(RegisterLine* registerLine, u4 vsrc,
     const RegType* insnRegs = registerLine->regTypes;
     RegType srcType = insnRegs[vsrc];
 
-    //LOGD("check-reg v%u = %d", vsrc, checkType);
+    //ALOGD("check-reg v%u = %d", vsrc, checkType);
     switch (checkType) {
     case kRegTypeFloat:
     case kRegTypeBoolean:
@@ -1728,7 +1728,7 @@ static void markRefsAsInitialized(RegisterLine* registerLine, int insnRegCount,
 
     clazz = getUninitInstance(uninitMap, regTypeToUninitIndex(uninitType));
     if (clazz == NULL) {
-        LOGE("VFY: unable to find type=%#x (idx=%d)",
+        ALOGE("VFY: unable to find type=%#x (idx=%d)",
             uninitType, regTypeToUninitIndex(uninitType));
         *pFailure = VERIFY_ERROR_GENERIC;
         return;
@@ -1742,7 +1742,7 @@ static void markRefsAsInitialized(RegisterLine* registerLine, int insnRegCount,
             changed++;
         }
     }
-    //LOGD("VFY: marked %d registers as initialized", changed);
+    //ALOGD("VFY: marked %d registers as initialized", changed);
     assert(changed > 0);
 
     return;
@@ -1772,7 +1772,7 @@ static void markUninitRefsAsInvalid(RegisterLine* registerLine,
     }
 
     //if (changed)
-    //    LOGD("VFY: marked %d uninitialized registers as invalid", changed);
+    //    ALOGD("VFY: marked %d uninitialized registers as invalid", changed);
 }
 
 /*
@@ -2645,7 +2645,7 @@ static bool updateRegisters(const Method* meth, InsnFlags* insnFlags,
         }
 
         if (gDebugVerbose) {
-            //LOGI(" RESULT (changed=%d)", changed);
+            //ALOGI(" RESULT (changed=%d)", changed);
             //dumpRegTypes(vdata, targetRegs, 0, "rslt", NULL, 0);
         }
 #ifdef VERIFIER_STATS
@@ -3146,7 +3146,7 @@ static bool initRegisterTable(const VerifierData* vdata,
     storage = assignLineStorage(storage, &regTable->savedLine,
         trackMonitors, regTypeSize, monEntSize, stackSize);
 
-    //LOGD("Tracking registers for [%d], total %d in %d units",
+    //ALOGD("Tracking registers for [%d], total %d in %d units",
     //    trackRegsFor, interestingCount-kExtraLines, insnsSize);
 
     assert(storage - (u1*)regTable->lineAlloc ==
@@ -3194,7 +3194,7 @@ static void verifyFilledNewArrayRegs(const Method* meth,
     } else {
         expectedType = primitiveTypeToRegType(elemType);
     }
-    //LOGI("filled-new-array: %s -> %d", resClass->descriptor, expectedType);
+    //ALOGI("filled-new-array: %s -> %d", resClass->descriptor, expectedType);
 
     /*
      * Verify each register.  If "argCount" is bad, verifyRegisterType()
@@ -3229,10 +3229,7 @@ static void verifyFilledNewArrayRegs(const Method* meth,
  * The throw-verification-error instruction requires two code units.  Some
  * of the replaced instructions require three; the third code unit will
  * receive a "nop".  The instruction's length will be left unchanged
- * in "insnFlags".  If the erroring instruction is a jumbo instruction,
- * the throw-verification-error-jumbo instruction requires four code units.
- * Some jumbo instructions require five, and the fifth code unit will become
- * a "nop".
+ * in "insnFlags".
  *
  * The VM postpones setting of debugger breakpoints in unverified classes,
  * so there should be no clashes with the debugger.
@@ -3245,10 +3242,9 @@ static bool replaceFailingInstruction(const Method* meth, InsnFlags* insnFlags,
     VerifyErrorRefType refType;
     u2* oldInsns = (u2*) meth->insns + insnIdx;
     int width;
-    bool result = false;
 
     if (gDvm.optimizing)
-        LOGD("Weird: RFI during dexopt?");
+        ALOGD("Weird: RFI during dexopt?");
 
     /*
      * Generate the new instruction out of the old.
@@ -3264,12 +3260,6 @@ static bool replaceFailingInstruction(const Method* meth, InsnFlags* insnFlags,
     case OP_NEW_ARRAY:
     case OP_FILLED_NEW_ARRAY:           // insn[1] == class ref, 3 bytes
     case OP_FILLED_NEW_ARRAY_RANGE:
-    case OP_CONST_CLASS_JUMBO:          // insn[1/2] == class ref, 4 bytes
-    case OP_CHECK_CAST_JUMBO:
-    case OP_NEW_INSTANCE_JUMBO:
-    case OP_INSTANCE_OF_JUMBO:          // insn[1/2] == class ref, 5 bytes
-    case OP_NEW_ARRAY_JUMBO:
-    case OP_FILLED_NEW_ARRAY_JUMBO:
         refType = VERIFY_ERROR_REF_CLASS;
         break;
 
@@ -3301,34 +3291,6 @@ static bool replaceFailingInstruction(const Method* meth, InsnFlags* insnFlags,
     case OP_SPUT_SHORT:
     case OP_SPUT_WIDE:
     case OP_SPUT_OBJECT:
-    case OP_SGET_JUMBO:                 // insn[1/2] == field ref, 4 bytes
-    case OP_SGET_BOOLEAN_JUMBO:
-    case OP_SGET_BYTE_JUMBO:
-    case OP_SGET_CHAR_JUMBO:
-    case OP_SGET_SHORT_JUMBO:
-    case OP_SGET_WIDE_JUMBO:
-    case OP_SGET_OBJECT_JUMBO:
-    case OP_SPUT_JUMBO:
-    case OP_SPUT_BOOLEAN_JUMBO:
-    case OP_SPUT_BYTE_JUMBO:
-    case OP_SPUT_CHAR_JUMBO:
-    case OP_SPUT_SHORT_JUMBO:
-    case OP_SPUT_WIDE_JUMBO:
-    case OP_SPUT_OBJECT_JUMBO:
-    case OP_IGET_JUMBO:                 // insn[1/2] == field ref, 5 bytes
-    case OP_IGET_BOOLEAN_JUMBO:
-    case OP_IGET_BYTE_JUMBO:
-    case OP_IGET_CHAR_JUMBO:
-    case OP_IGET_SHORT_JUMBO:
-    case OP_IGET_WIDE_JUMBO:
-    case OP_IGET_OBJECT_JUMBO:
-    case OP_IPUT_JUMBO:
-    case OP_IPUT_BOOLEAN_JUMBO:
-    case OP_IPUT_BYTE_JUMBO:
-    case OP_IPUT_CHAR_JUMBO:
-    case OP_IPUT_SHORT_JUMBO:
-    case OP_IPUT_WIDE_JUMBO:
-    case OP_IPUT_OBJECT_JUMBO:
         refType = VERIFY_ERROR_REF_FIELD;
         break;
 
@@ -3342,18 +3304,13 @@ static bool replaceFailingInstruction(const Method* meth, InsnFlags* insnFlags,
     case OP_INVOKE_STATIC_RANGE:
     case OP_INVOKE_INTERFACE:
     case OP_INVOKE_INTERFACE_RANGE:
-    case OP_INVOKE_VIRTUAL_JUMBO:       // insn[1/2] == method ref, 5 bytes
-    case OP_INVOKE_SUPER_JUMBO:
-    case OP_INVOKE_DIRECT_JUMBO:
-    case OP_INVOKE_STATIC_JUMBO:
-    case OP_INVOKE_INTERFACE_JUMBO:
         refType = VERIFY_ERROR_REF_METHOD;
         break;
 
     default:
         /* could handle this in a generic way, but this is probably safer */
         LOG_VFY("GLITCH: verifier asked to replace opcode 0x%02x", opcode);
-        goto bail;
+        return false;
     }
 
     assert((dexGetFlagsFromOpcode(opcode) & kInstrCanThrow) != 0);
@@ -3368,37 +3325,20 @@ static bool replaceFailingInstruction(const Method* meth, InsnFlags* insnFlags,
     case 3:
         dvmUpdateCodeUnit(meth, oldInsns+2, OP_NOP);
         break;
-    case 5:
-        dvmUpdateCodeUnit(meth, oldInsns+4, OP_NOP);
-        break;
     default:
         /* whoops */
-        LOGE("ERROR: stomped a %d-unit instruction with a verifier error",
+        ALOGE("ERROR: stomped a %d-unit instruction with a verifier error",
             width);
         dvmAbort();
     }
 
-    /* check for jumbo opcodes */
-    if (opcode > OP_DISPATCH_FF) {
-        /* replace opcode and failure code */
-        assert(width == 4 || width == 5);
-        u2 newVal = (u2) ((OP_THROW_VERIFICATION_ERROR_JUMBO << 8) |
-                           OP_DISPATCH_FF);
-        dvmUpdateCodeUnit(meth, oldInsns, newVal);
-        newVal = failure | (refType << kVerifyErrorRefTypeShift);
-        dvmUpdateCodeUnit(meth, oldInsns+3, newVal);
-    } else {
-        /* encode the opcode, with the failure code in the high byte */
-        assert(width == 2 || width == 3);
-        u2 newVal = OP_THROW_VERIFICATION_ERROR |
-            (failure << 8) | (refType << (8 + kVerifyErrorRefTypeShift));
-        dvmUpdateCodeUnit(meth, oldInsns, newVal);
-    }
+    /* encode the opcode, with the failure code in the high byte */
+    assert(width == 2 || width == 3);
+    u2 newVal = OP_THROW_VERIFICATION_ERROR |
+        (failure << 8) | (refType << (8 + kVerifyErrorRefTypeShift));
+    dvmUpdateCodeUnit(meth, oldInsns, newVal);
 
-    result = true;
-
-bail:
-    return result;
+    return true;
 }
 
 /*
@@ -3679,12 +3619,12 @@ static bool doCodeVerification(VerifierData* vdata, RegisterTable* regTable)
     dvmInsnSetChanged(insnFlags, 0, true);
 
     if (dvmWantVerboseVerification(meth)) {
-        IF_LOGI() {
+        IF_ALOGI() {
             char* desc = dexProtoCopyMethodDescriptor(&meth->prototype);
-            LOGI("Now verifying: %s.%s %s (ins=%d regs=%d)",
+            ALOGI("Now verifying: %s.%s %s (ins=%d regs=%d)",
                 meth->clazz->descriptor, meth->name, desc,
                 meth->insSize, meth->registersSize);
-            LOGI(" ------ [0    4    8    12   16   20   24   28   32   36");
+            ALOGI(" ------ [0    4    8    12   16   20   24   28   32   36");
             free(desc);
         }
         debugVerbose = true;
@@ -3760,12 +3700,12 @@ static bool doCodeVerification(VerifierData* vdata, RegisterTable* regTable)
                 NULL, uninitMap, SHOW_REG_DETAILS);
         }
 
-        //LOGI("process %s.%s %s %d",
+        //ALOGI("process %s.%s %s %d",
         //    meth->clazz->descriptor, meth->name, meth->descriptor, insnIdx);
         if (!verifyInstruction(meth, insnFlags, regTable, insnIdx,
                 uninitMap, &startGuess))
         {
-            //LOGD("+++ %s bailing at %d", meth->name, insnIdx);
+            //ALOGD("+++ %s bailing at %d", meth->name, insnIdx);
             goto bail;
         }
 
@@ -3809,10 +3749,10 @@ static bool doCodeVerification(VerifierData* vdata, RegisterTable* regTable)
                 if (deadStart < 0)
                     deadStart = insnIdx;
             } else if (deadStart >= 0) {
-                IF_LOGD() {
+                IF_ALOGD() {
                     char* desc =
                         dexProtoCopyMethodDescriptor(&meth->prototype);
-                    LOGD("VFY: dead code 0x%04x-%04x in %s.%s %s",
+                    ALOGD("VFY: dead code 0x%04x-%04x in %s.%s %s",
                         deadStart, insnIdx-1,
                         meth->clazz->descriptor, meth->name, desc);
                     free(desc);
@@ -3822,9 +3762,9 @@ static bool doCodeVerification(VerifierData* vdata, RegisterTable* regTable)
             }
         }
         if (deadStart >= 0) {
-            IF_LOGD() {
+            IF_ALOGD() {
                 char* desc = dexProtoCopyMethodDescriptor(&meth->prototype);
-                LOGD("VFY: dead code 0x%04x-%04x in %s.%s %s",
+                ALOGD("VFY: dead code 0x%04x-%04x in %s.%s %s",
                     deadStart, insnIdx-1,
                     meth->clazz->descriptor, meth->name, desc);
                 free(desc);
@@ -4124,7 +4064,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
             regTypeFromClass(gDvm.classJavaLangString));
         break;
     case OP_CONST_CLASS:
-    case OP_CONST_CLASS_JUMBO:
         assert(gDvm.classJavaLangClass != NULL);
         /* make sure we can resolve the class; access check is important */
         resClass = dvmOptResolveClass(meth->clazz, decInsn.vB, &failure);
@@ -4170,7 +4109,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
         break;
 
     case OP_CHECK_CAST:
-    case OP_CHECK_CAST_JUMBO:
         /*
          * If this instruction succeeds, we will promote register vA to
          * the type in vB.  (This could be a demotion -- not expected, so
@@ -4199,7 +4137,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
         }
         break;
     case OP_INSTANCE_OF:
-    case OP_INSTANCE_OF_JUMBO:
         /* make sure we're checking a reference type */
         tmpType = getRegisterType(workLine, decInsn.vB);
         if (!regTypeIsReference(tmpType)) {
@@ -4235,7 +4172,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
         break;
 
     case OP_NEW_INSTANCE:
-    case OP_NEW_INSTANCE_JUMBO:
         resClass = dvmOptResolveClass(meth->clazz, decInsn.vB, &failure);
         if (resClass == NULL) {
             const char* badClassDesc = dexStringByTypeIdx(pDexFile, decInsn.vB);
@@ -4271,7 +4207,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
         }
         break;
     case OP_NEW_ARRAY:
-    case OP_NEW_ARRAY_JUMBO:
         resClass = dvmOptResolveClass(meth->clazz, decInsn.vC, &failure);
         if (resClass == NULL) {
             const char* badClassDesc = dexStringByTypeIdx(pDexFile, decInsn.vC);
@@ -4291,7 +4226,6 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
         break;
     case OP_FILLED_NEW_ARRAY:
     case OP_FILLED_NEW_ARRAY_RANGE:
-    case OP_FILLED_NEW_ARRAY_JUMBO:
         resClass = dvmOptResolveClass(meth->clazz, decInsn.vB, &failure);
         if (resClass == NULL) {
             const char* badClassDesc = dexStringByTypeIdx(pDexFile, decInsn.vB);
@@ -4303,8 +4237,7 @@ static bool verifyInstruction(const Method* meth, InsnFlags* insnFlags,
             LOG_VFY("VFY: filled-new-array on non-array class");
             failure = VERIFY_ERROR_GENERIC;
         } else {
-            bool isRange = (decInsn.opcode == OP_FILLED_NEW_ARRAY_RANGE ||
-                            decInsn.opcode == OP_FILLED_NEW_ARRAY_JUMBO);
+            bool isRange = (decInsn.opcode == OP_FILLED_NEW_ARRAY_RANGE);
 
             /* check the arguments to the instruction */
             verifyFilledNewArrayRegs(meth, workLine, &decInsn,
@@ -4562,7 +4495,12 @@ aget_1nr_common:
                     failure = VERIFY_ERROR_GENERIC;
                     break;
                 }
-
+            } else {
+                /*
+                 * Null array ref; this code path will fail at runtime. Label
+                 * result as zero to allow it to remain mergeable.
+                 */
+                tmpType = kRegTypeZero;
             }
             setRegisterType(workLine, decInsn.vA, tmpType);
         }
@@ -4841,23 +4779,18 @@ aput_1nr_common:
         break;
 
     case OP_IGET:
-    case OP_IGET_JUMBO:
         tmpType = kRegTypeInteger;
         goto iget_1nr_common;
     case OP_IGET_BOOLEAN:
-    case OP_IGET_BOOLEAN_JUMBO:
         tmpType = kRegTypeBoolean;
         goto iget_1nr_common;
     case OP_IGET_BYTE:
-    case OP_IGET_BYTE_JUMBO:
         tmpType = kRegTypeByte;
         goto iget_1nr_common;
     case OP_IGET_CHAR:
-    case OP_IGET_CHAR_JUMBO:
         tmpType = kRegTypeChar;
         goto iget_1nr_common;
     case OP_IGET_SHORT:
-    case OP_IGET_SHORT_JUMBO:
         tmpType = kRegTypeShort;
         goto iget_1nr_common;
 iget_1nr_common:
@@ -4892,7 +4825,6 @@ iget_1nr_common:
         }
         break;
     case OP_IGET_WIDE:
-    case OP_IGET_WIDE_JUMBO:
         {
             RegType dstType;
             InstField* instField;
@@ -4925,7 +4857,6 @@ iget_1nr_common:
         }
         break;
     case OP_IGET_OBJECT:
-    case OP_IGET_OBJECT_JUMBO:
         {
             ClassObject* fieldClass;
             InstField* instField;
@@ -4952,23 +4883,18 @@ iget_1nr_common:
         }
         break;
     case OP_IPUT:
-    case OP_IPUT_JUMBO:
         tmpType = kRegTypeInteger;
         goto iput_1nr_common;
     case OP_IPUT_BOOLEAN:
-    case OP_IPUT_BOOLEAN_JUMBO:
         tmpType = kRegTypeBoolean;
         goto iput_1nr_common;
     case OP_IPUT_BYTE:
-    case OP_IPUT_BYTE_JUMBO:
         tmpType = kRegTypeByte;
         goto iput_1nr_common;
     case OP_IPUT_CHAR:
-    case OP_IPUT_CHAR_JUMBO:
         tmpType = kRegTypeChar;
         goto iput_1nr_common;
     case OP_IPUT_SHORT:
-    case OP_IPUT_SHORT_JUMBO:
         tmpType = kRegTypeShort;
         goto iput_1nr_common;
 iput_1nr_common:
@@ -5030,7 +4956,6 @@ iput_1nr_common:
         }
         break;
     case OP_IPUT_WIDE:
-    case OP_IPUT_WIDE_JUMBO:
         tmpType = getRegisterType(workLine, decInsn.vA);
         {
             RegType typeHi = getRegisterType(workLine, decInsn.vA + 1);
@@ -5069,7 +4994,6 @@ iput_1nr_common:
         }
         break;
     case OP_IPUT_OBJECT:
-    case OP_IPUT_OBJECT_JUMBO:
         {
             ClassObject* fieldClass;
             ClassObject* valueClass;
@@ -5125,23 +5049,18 @@ iput_1nr_common:
         break;
 
     case OP_SGET:
-    case OP_SGET_JUMBO:
         tmpType = kRegTypeInteger;
         goto sget_1nr_common;
     case OP_SGET_BOOLEAN:
-    case OP_SGET_BOOLEAN_JUMBO:
         tmpType = kRegTypeBoolean;
         goto sget_1nr_common;
     case OP_SGET_BYTE:
-    case OP_SGET_BYTE_JUMBO:
         tmpType = kRegTypeByte;
         goto sget_1nr_common;
     case OP_SGET_CHAR:
-    case OP_SGET_CHAR_JUMBO:
         tmpType = kRegTypeChar;
         goto sget_1nr_common;
     case OP_SGET_SHORT:
-    case OP_SGET_SHORT_JUMBO:
         tmpType = kRegTypeShort;
         goto sget_1nr_common;
 sget_1nr_common:
@@ -5178,7 +5097,6 @@ sget_1nr_common:
         }
         break;
     case OP_SGET_WIDE:
-    case OP_SGET_WIDE_JUMBO:
         {
             StaticField* staticField;
             RegType dstType;
@@ -5208,7 +5126,6 @@ sget_1nr_common:
         }
         break;
     case OP_SGET_OBJECT:
-    case OP_SGET_OBJECT_JUMBO:
         {
             StaticField* staticField;
             ClassObject* fieldClass;
@@ -5232,23 +5149,18 @@ sget_1nr_common:
         }
         break;
     case OP_SPUT:
-    case OP_SPUT_JUMBO:
         tmpType = kRegTypeInteger;
         goto sput_1nr_common;
     case OP_SPUT_BOOLEAN:
-    case OP_SPUT_BOOLEAN_JUMBO:
         tmpType = kRegTypeBoolean;
         goto sput_1nr_common;
     case OP_SPUT_BYTE:
-    case OP_SPUT_BYTE_JUMBO:
         tmpType = kRegTypeByte;
         goto sput_1nr_common;
     case OP_SPUT_CHAR:
-    case OP_SPUT_CHAR_JUMBO:
         tmpType = kRegTypeChar;
         goto sput_1nr_common;
     case OP_SPUT_SHORT:
-    case OP_SPUT_SHORT_JUMBO:
         tmpType = kRegTypeShort;
         goto sput_1nr_common;
 sput_1nr_common:
@@ -5313,7 +5225,6 @@ sput_1nr_common:
         }
         break;
     case OP_SPUT_WIDE:
-    case OP_SPUT_WIDE_JUMBO:
         tmpType = getRegisterType(workLine, decInsn.vA);
         {
             RegType typeHi = getRegisterType(workLine, decInsn.vA + 1);
@@ -5349,7 +5260,6 @@ sput_1nr_common:
         }
         break;
     case OP_SPUT_OBJECT:
-    case OP_SPUT_OBJECT_JUMBO:
         {
             ClassObject* fieldClass;
             ClassObject* valueClass;
@@ -5404,10 +5314,8 @@ sput_1nr_common:
 
     case OP_INVOKE_VIRTUAL:
     case OP_INVOKE_VIRTUAL_RANGE:
-    case OP_INVOKE_VIRTUAL_JUMBO:
     case OP_INVOKE_SUPER:
     case OP_INVOKE_SUPER_RANGE:
-    case OP_INVOKE_SUPER_JUMBO:
         {
             Method* calledMethod;
             RegType returnType;
@@ -5415,12 +5323,9 @@ sput_1nr_common:
             bool isSuper;
 
             isRange =  (decInsn.opcode == OP_INVOKE_VIRTUAL_RANGE ||
-                        decInsn.opcode == OP_INVOKE_VIRTUAL_JUMBO ||
-                        decInsn.opcode == OP_INVOKE_SUPER_RANGE ||
-                        decInsn.opcode == OP_INVOKE_SUPER_JUMBO);
+                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
             isSuper =  (decInsn.opcode == OP_INVOKE_SUPER ||
-                        decInsn.opcode == OP_INVOKE_SUPER_RANGE ||
-                        decInsn.opcode == OP_INVOKE_SUPER_JUMBO);
+                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
 
             calledMethod = verifyInvocationArgs(meth, workLine, insnRegCount,
                             &decInsn, uninitMap, METHOD_VIRTUAL, isRange,
@@ -5434,14 +5339,12 @@ sput_1nr_common:
         break;
     case OP_INVOKE_DIRECT:
     case OP_INVOKE_DIRECT_RANGE:
-    case OP_INVOKE_DIRECT_JUMBO:
         {
             RegType returnType;
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_DIRECT_RANGE ||
-                        decInsn.opcode == OP_INVOKE_DIRECT_JUMBO);
+            isRange =  (decInsn.opcode == OP_INVOKE_DIRECT_RANGE);
             calledMethod = verifyInvocationArgs(meth, workLine, insnRegCount,
                             &decInsn, uninitMap, METHOD_DIRECT, isRange,
                             false, &failure);
@@ -5515,14 +5418,12 @@ sput_1nr_common:
         break;
     case OP_INVOKE_STATIC:
     case OP_INVOKE_STATIC_RANGE:
-    case OP_INVOKE_STATIC_JUMBO:
         {
             RegType returnType;
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_STATIC_RANGE ||
-                        decInsn.opcode == OP_INVOKE_STATIC_JUMBO);
+            isRange =  (decInsn.opcode == OP_INVOKE_STATIC_RANGE);
             calledMethod = verifyInvocationArgs(meth, workLine, insnRegCount,
                             &decInsn, uninitMap, METHOD_STATIC, isRange,
                             false, &failure);
@@ -5536,14 +5437,12 @@ sput_1nr_common:
         break;
     case OP_INVOKE_INTERFACE:
     case OP_INVOKE_INTERFACE_RANGE:
-    case OP_INVOKE_INTERFACE_JUMBO:
         {
             RegType /*thisType,*/ returnType;
             Method* absMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_INTERFACE_RANGE ||
-                        decInsn.opcode == OP_INVOKE_INTERFACE_JUMBO);
+            isRange =  (decInsn.opcode == OP_INVOKE_INTERFACE_RANGE);
             absMethod = verifyInvocationArgs(meth, workLine, insnRegCount,
                             &decInsn, uninitMap, METHOD_INTERFACE, isRange,
                             false, &failure);
@@ -5834,7 +5733,6 @@ sput_1nr_common:
      * inserted in the course of verification, we can expect to see it here.
      */
     case OP_THROW_VERIFICATION_ERROR:
-    case OP_THROW_VERIFICATION_ERROR_JUMBO:
         break;
 
     /*
@@ -5891,32 +5789,19 @@ sput_1nr_common:
      * completes, though, so we don't expect to see them here.
      */
     case OP_INVOKE_OBJECT_INIT_RANGE:
-    case OP_INVOKE_OBJECT_INIT_JUMBO:
     case OP_RETURN_VOID_BARRIER:
     case OP_IGET_VOLATILE:
-    case OP_IGET_VOLATILE_JUMBO:
     case OP_IGET_WIDE_VOLATILE:
-    case OP_IGET_WIDE_VOLATILE_JUMBO:
     case OP_IGET_OBJECT_VOLATILE:
-    case OP_IGET_OBJECT_VOLATILE_JUMBO:
     case OP_IPUT_VOLATILE:
-    case OP_IPUT_VOLATILE_JUMBO:
     case OP_IPUT_WIDE_VOLATILE:
-    case OP_IPUT_WIDE_VOLATILE_JUMBO:
     case OP_IPUT_OBJECT_VOLATILE:
-    case OP_IPUT_OBJECT_VOLATILE_JUMBO:
     case OP_SGET_VOLATILE:
-    case OP_SGET_VOLATILE_JUMBO:
     case OP_SGET_WIDE_VOLATILE:
-    case OP_SGET_WIDE_VOLATILE_JUMBO:
     case OP_SGET_OBJECT_VOLATILE:
-    case OP_SGET_OBJECT_VOLATILE_JUMBO:
     case OP_SPUT_VOLATILE:
-    case OP_SPUT_VOLATILE_JUMBO:
     case OP_SPUT_WIDE_VOLATILE:
-    case OP_SPUT_WIDE_VOLATILE_JUMBO:
     case OP_SPUT_OBJECT_VOLATILE:
-    case OP_SPUT_OBJECT_VOLATILE_JUMBO:
         /* fall through to failure */
 
     /* these should never appear during verification */
@@ -5930,210 +5815,7 @@ sput_1nr_common:
     case OP_UNUSED_79:
     case OP_UNUSED_7A:
     case OP_BREAKPOINT:
-    case OP_DISPATCH_FF:
-    case OP_UNUSED_27FF:
-    case OP_UNUSED_28FF:
-    case OP_UNUSED_29FF:
-    case OP_UNUSED_2AFF:
-    case OP_UNUSED_2BFF:
-    case OP_UNUSED_2CFF:
-    case OP_UNUSED_2DFF:
-    case OP_UNUSED_2EFF:
-    case OP_UNUSED_2FFF:
-    case OP_UNUSED_30FF:
-    case OP_UNUSED_31FF:
-    case OP_UNUSED_32FF:
-    case OP_UNUSED_33FF:
-    case OP_UNUSED_34FF:
-    case OP_UNUSED_35FF:
-    case OP_UNUSED_36FF:
-    case OP_UNUSED_37FF:
-    case OP_UNUSED_38FF:
-    case OP_UNUSED_39FF:
-    case OP_UNUSED_3AFF:
-    case OP_UNUSED_3BFF:
-    case OP_UNUSED_3CFF:
-    case OP_UNUSED_3DFF:
-    case OP_UNUSED_3EFF:
-    case OP_UNUSED_3FFF:
-    case OP_UNUSED_40FF:
-    case OP_UNUSED_41FF:
-    case OP_UNUSED_42FF:
-    case OP_UNUSED_43FF:
-    case OP_UNUSED_44FF:
-    case OP_UNUSED_45FF:
-    case OP_UNUSED_46FF:
-    case OP_UNUSED_47FF:
-    case OP_UNUSED_48FF:
-    case OP_UNUSED_49FF:
-    case OP_UNUSED_4AFF:
-    case OP_UNUSED_4BFF:
-    case OP_UNUSED_4CFF:
-    case OP_UNUSED_4DFF:
-    case OP_UNUSED_4EFF:
-    case OP_UNUSED_4FFF:
-    case OP_UNUSED_50FF:
-    case OP_UNUSED_51FF:
-    case OP_UNUSED_52FF:
-    case OP_UNUSED_53FF:
-    case OP_UNUSED_54FF:
-    case OP_UNUSED_55FF:
-    case OP_UNUSED_56FF:
-    case OP_UNUSED_57FF:
-    case OP_UNUSED_58FF:
-    case OP_UNUSED_59FF:
-    case OP_UNUSED_5AFF:
-    case OP_UNUSED_5BFF:
-    case OP_UNUSED_5CFF:
-    case OP_UNUSED_5DFF:
-    case OP_UNUSED_5EFF:
-    case OP_UNUSED_5FFF:
-    case OP_UNUSED_60FF:
-    case OP_UNUSED_61FF:
-    case OP_UNUSED_62FF:
-    case OP_UNUSED_63FF:
-    case OP_UNUSED_64FF:
-    case OP_UNUSED_65FF:
-    case OP_UNUSED_66FF:
-    case OP_UNUSED_67FF:
-    case OP_UNUSED_68FF:
-    case OP_UNUSED_69FF:
-    case OP_UNUSED_6AFF:
-    case OP_UNUSED_6BFF:
-    case OP_UNUSED_6CFF:
-    case OP_UNUSED_6DFF:
-    case OP_UNUSED_6EFF:
-    case OP_UNUSED_6FFF:
-    case OP_UNUSED_70FF:
-    case OP_UNUSED_71FF:
-    case OP_UNUSED_72FF:
-    case OP_UNUSED_73FF:
-    case OP_UNUSED_74FF:
-    case OP_UNUSED_75FF:
-    case OP_UNUSED_76FF:
-    case OP_UNUSED_77FF:
-    case OP_UNUSED_78FF:
-    case OP_UNUSED_79FF:
-    case OP_UNUSED_7AFF:
-    case OP_UNUSED_7BFF:
-    case OP_UNUSED_7CFF:
-    case OP_UNUSED_7DFF:
-    case OP_UNUSED_7EFF:
-    case OP_UNUSED_7FFF:
-    case OP_UNUSED_80FF:
-    case OP_UNUSED_81FF:
-    case OP_UNUSED_82FF:
-    case OP_UNUSED_83FF:
-    case OP_UNUSED_84FF:
-    case OP_UNUSED_85FF:
-    case OP_UNUSED_86FF:
-    case OP_UNUSED_87FF:
-    case OP_UNUSED_88FF:
-    case OP_UNUSED_89FF:
-    case OP_UNUSED_8AFF:
-    case OP_UNUSED_8BFF:
-    case OP_UNUSED_8CFF:
-    case OP_UNUSED_8DFF:
-    case OP_UNUSED_8EFF:
-    case OP_UNUSED_8FFF:
-    case OP_UNUSED_90FF:
-    case OP_UNUSED_91FF:
-    case OP_UNUSED_92FF:
-    case OP_UNUSED_93FF:
-    case OP_UNUSED_94FF:
-    case OP_UNUSED_95FF:
-    case OP_UNUSED_96FF:
-    case OP_UNUSED_97FF:
-    case OP_UNUSED_98FF:
-    case OP_UNUSED_99FF:
-    case OP_UNUSED_9AFF:
-    case OP_UNUSED_9BFF:
-    case OP_UNUSED_9CFF:
-    case OP_UNUSED_9DFF:
-    case OP_UNUSED_9EFF:
-    case OP_UNUSED_9FFF:
-    case OP_UNUSED_A0FF:
-    case OP_UNUSED_A1FF:
-    case OP_UNUSED_A2FF:
-    case OP_UNUSED_A3FF:
-    case OP_UNUSED_A4FF:
-    case OP_UNUSED_A5FF:
-    case OP_UNUSED_A6FF:
-    case OP_UNUSED_A7FF:
-    case OP_UNUSED_A8FF:
-    case OP_UNUSED_A9FF:
-    case OP_UNUSED_AAFF:
-    case OP_UNUSED_ABFF:
-    case OP_UNUSED_ACFF:
-    case OP_UNUSED_ADFF:
-    case OP_UNUSED_AEFF:
-    case OP_UNUSED_AFFF:
-    case OP_UNUSED_B0FF:
-    case OP_UNUSED_B1FF:
-    case OP_UNUSED_B2FF:
-    case OP_UNUSED_B3FF:
-    case OP_UNUSED_B4FF:
-    case OP_UNUSED_B5FF:
-    case OP_UNUSED_B6FF:
-    case OP_UNUSED_B7FF:
-    case OP_UNUSED_B8FF:
-    case OP_UNUSED_B9FF:
-    case OP_UNUSED_BAFF:
-    case OP_UNUSED_BBFF:
-    case OP_UNUSED_BCFF:
-    case OP_UNUSED_BDFF:
-    case OP_UNUSED_BEFF:
-    case OP_UNUSED_BFFF:
-    case OP_UNUSED_C0FF:
-    case OP_UNUSED_C1FF:
-    case OP_UNUSED_C2FF:
-    case OP_UNUSED_C3FF:
-    case OP_UNUSED_C4FF:
-    case OP_UNUSED_C5FF:
-    case OP_UNUSED_C6FF:
-    case OP_UNUSED_C7FF:
-    case OP_UNUSED_C8FF:
-    case OP_UNUSED_C9FF:
-    case OP_UNUSED_CAFF:
-    case OP_UNUSED_CBFF:
-    case OP_UNUSED_CCFF:
-    case OP_UNUSED_CDFF:
-    case OP_UNUSED_CEFF:
-    case OP_UNUSED_CFFF:
-    case OP_UNUSED_D0FF:
-    case OP_UNUSED_D1FF:
-    case OP_UNUSED_D2FF:
-    case OP_UNUSED_D3FF:
-    case OP_UNUSED_D4FF:
-    case OP_UNUSED_D5FF:
-    case OP_UNUSED_D6FF:
-    case OP_UNUSED_D7FF:
-    case OP_UNUSED_D8FF:
-    case OP_UNUSED_D9FF:
-    case OP_UNUSED_DAFF:
-    case OP_UNUSED_DBFF:
-    case OP_UNUSED_DCFF:
-    case OP_UNUSED_DDFF:
-    case OP_UNUSED_DEFF:
-    case OP_UNUSED_DFFF:
-    case OP_UNUSED_E0FF:
-    case OP_UNUSED_E1FF:
-    case OP_UNUSED_E2FF:
-    case OP_UNUSED_E3FF:
-    case OP_UNUSED_E4FF:
-    case OP_UNUSED_E5FF:
-    case OP_UNUSED_E6FF:
-    case OP_UNUSED_E7FF:
-    case OP_UNUSED_E8FF:
-    case OP_UNUSED_E9FF:
-    case OP_UNUSED_EAFF:
-    case OP_UNUSED_EBFF:
-    case OP_UNUSED_ECFF:
-    case OP_UNUSED_EDFF:
-    case OP_UNUSED_EEFF:
-    case OP_UNUSED_EFFF:
-    case OP_UNUSED_F0FF:
-    case OP_UNUSED_F1FF:
+    case OP_UNUSED_FF:
         failure = VERIFY_ERROR_GENERIC;
         break;
 
@@ -6151,7 +5833,7 @@ sput_1nr_common:
             goto bail;
         } else {
             /* replace opcode and continue on */
-            LOGD("VFY: replacing opcode 0x%02x at 0x%04x",
+            ALOGD("VFY: replacing opcode 0x%02x at 0x%04x",
                 decInsn.opcode, insnIdx);
             if (!replaceFailingInstruction(meth, insnFlags, insnIdx, failure)) {
                 LOG_VFY_METH(meth, "VFY:  rejecting opcode 0x%02x at 0x%04x",
@@ -6392,7 +6074,7 @@ static void logLocalsCb(void *cnxt, u2 reg, u4 startAddress, u4 endAddress,
 
     if (addr >= (int) startAddress && addr < (int) endAddress)
     {
-        LOGI("        %2d: '%s' %s", reg, name, descriptor);
+        ALOGI("        %2d: '%s' %s", reg, name, descriptor);
     }
 }
 
@@ -6471,10 +6153,10 @@ static void dumpRegTypes(const VerifierData* vdata,
     }
 
     if (addr == 0 && addrName != NULL) {
-        LOGI("%c%s %s mst=%d", branchTarget ? '>' : ' ',
+        ALOGI("%c%s %s mst=%d", branchTarget ? '>' : ' ',
             addrName, regChars, registerLine->monitorStackTop);
     } else {
-        LOGI("%c0x%04x %s mst=%d", branchTarget ? '>' : ' ',
+        ALOGI("%c0x%04x %s mst=%d", branchTarget ? '>' : ' ',
             addr, regChars, registerLine->monitorStackTop);
     }
     if (displayFlags & DRT_SHOW_LIVENESS) {
@@ -6492,9 +6174,9 @@ static void dumpRegTypes(const VerifierData* vdata,
                 bool isLive = dvmIsBitSet(liveRegs, i);
                 liveChars[i + 1 + (i / 4)] = isLive ? '+' : '-';
             }
-            LOGI("        %s", liveChars);
+            ALOGI("        %s", liveChars);
         } else {
-            LOGI("        %c", '#');
+            ALOGI("        %c", '#');
         }
     }
 
@@ -6505,12 +6187,12 @@ static void dumpRegTypes(const VerifierData* vdata,
                 ClassObject* clazz = regTypeReferenceToClass(addrRegs[i], uninitMap);
                 assert(dvmIsHeapAddress((Object*)clazz));
                 if (i < regCount) {
-                    LOGI("        %2d: 0x%08x %s%s",
+                    ALOGI("        %2d: 0x%08x %s%s",
                         i, addrRegs[i],
                         regTypeIsUninitReference(addrRegs[i]) ? "[U]" : "",
                         clazz->descriptor);
                 } else {
-                    LOGI("        RS: 0x%08x %s%s",
+                    ALOGI("        RS: 0x%08x %s%s",
                         addrRegs[i],
                         regTypeIsUninitReference(addrRegs[i]) ? "[U]" : "",
                         clazz->descriptor);

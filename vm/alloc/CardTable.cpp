@@ -255,7 +255,7 @@ static void dumpWhiteReferenceVisitor(void *addr, void *arg)
     if (dvmHeapBitmapIsObjectBitSet(ctx->markBits, obj)) {
         return;
     }
-    LOGE("object %p is white", obj);
+    ALOGE("object %p is white", obj);
 }
 
 /*
@@ -277,7 +277,7 @@ static void dumpReferencesCallback(Object *obj, void *arg)
     }
     dvmVisitObject(dumpReferencesVisitor, obj, &arg);
     if (arg == NULL) {
-        LOGD("Found %p in the heap @ %p", arg, obj);
+        ALOGD("Found %p in the heap @ %p", arg, obj);
         dvmDumpObject(obj);
     }
 }
@@ -291,7 +291,7 @@ static void dumpReferencesRootVisitor(void *ptr, u4 threadId,
     Object *obj = *(Object **)ptr;
     Object *lookingFor = *(Object **)arg;
     if (obj == lookingFor) {
-        LOGD("Found %p in a root @ %p", arg, ptr);
+        ALOGD("Found %p in a root @ %p", arg, ptr);
     }
 }
 
@@ -380,7 +380,7 @@ static void verifyCardTableCallback(Object *obj, void *arg)
     } else if (isPushedOnMarkStack(obj)) {
         return;
     } else {
-        LOGE("Verify failed, object %p is gray and on an unmarked card", obj);
+        ALOGE("Verify failed, object %p is gray and on an unmarked card", obj);
         dvmDumpObject(obj);
         dvmVisitObject(dumpWhiteReferenceVisitor, obj, &ctx);
         dumpReferences(obj);

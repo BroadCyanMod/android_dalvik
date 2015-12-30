@@ -20,6 +20,10 @@
 #include "Dalvik.h"
 #include "native/InternalNativePriv.h"
 
+#ifdef HAVE_SELINUX
+#include <selinux/android.h>
+#endif
+
 #include <signal.h>
 #if (__GNUC__ == 4 && __GNUC_MINOR__ == 7)
 #include <sys/resource.h>
@@ -32,6 +36,13 @@
 #include <errno.h>
 #include <paths.h>
 #include <sys/personality.h>
+#include <sys/stat.h>
+#include <sys/mount.h>
+#include <linux/fs.h>
+#include <cutils/fs.h>
+#include <cutils/sched_policy.h>
+#include <cutils/multiuser.h>
+#include <sched.h>
 
 #if defined(HAVE_PRCTL)
 # include <sys/prctl.h>
@@ -48,6 +59,14 @@ enum {
     DEBUG_ENABLE_JNI_LOGGING        = 1 << 4,
 };
 
+/* must match values in dalvik.system.Zygote */
+enum {
+    MOUNT_EXTERNAL_NONE = 0,
+    MOUNT_EXTERNAL_SINGLEUSER = 1,
+    MOUNT_EXTERNAL_MULTIUSER = 2,
+    MOUNT_EXTERNAL_MULTIUSER_ALL = 3,
+};
+
 /*
  * This signal handler is for zygote mode, since the zygote
  * must reap its children
@@ -59,38 +78,38 @@ static void sigchldHandler(int s)
 
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         /* Log process-death status that we care about.  In general it is not
-           safe to call LOG(...) from a signal handler because of possible
+           safe to call ALOG(...) from a signal handler because of possible
            reentrancy.  However, we know a priori that the current implementation
-           of LOG() is safe to call from a SIGCHLD handler in the zygote process.
-           If the LOG() implementation changes its locking strategy or its use
+           of ALOG() is safe to call from a SIGCHLD handler in the zygote process.
+           If the ALOG() implementation changes its locking strategy or its use
            of syscalls within the lazy-init critical section, its use here may
            become unsafe. */
         if (WIFEXITED(status)) {
             if (WEXITSTATUS(status)) {
-                LOG(LOG_DEBUG, ZYGOTE_LOG_TAG, "Process %d exited cleanly (%d)",
+                ALOG(LOG_DEBUG, ZYGOTE_LOG_TAG, "Process %d exited cleanly (%d)",
                     (int) pid, WEXITSTATUS(status));
             } else {
-                IF_LOGV(/*should use ZYGOTE_LOG_TAG*/) {
-                    LOG(LOG_VERBOSE, ZYGOTE_LOG_TAG,
+                IF_ALOGV(/*should use ZYGOTE_LOG_TAG*/) {
+                    ALOG(LOG_VERBOSE, ZYGOTE_LOG_TAG,
                         "Process %d exited cleanly (%d)",
                         (int) pid, WEXITSTATUS(status));
                 }
             }
         } else if (WIFSIGNALED(status)) {
             if (WTERMSIG(status) != SIGKILL) {
-                LOG(LOG_DEBUG, ZYGOTE_LOG_TAG,
+                ALOG(LOG_DEBUG, ZYGOTE_LOG_TAG,
                     "Process %d terminated by signal (%d)",
                     (int) pid, WTERMSIG(status));
             } else {
-                IF_LOGV(/*should use ZYGOTE_LOG_TAG*/) {
-                    LOG(LOG_VERBOSE, ZYGOTE_LOG_TAG,
+                IF_ALOGV(/*should use ZYGOTE_LOG_TAG*/) {
+                    ALOG(LOG_VERBOSE, ZYGOTE_LOG_TAG,
                         "Process %d terminated by signal (%d)",
                         (int) pid, WTERMSIG(status));
                 }
             }
 #ifdef WCOREDUMP
             if (WCOREDUMP(status)) {
-                LOG(LOG_INFO, ZYGOTE_LOG_TAG, "Process %d dumped core",
+                ALOG(LOG_INFO, ZYGOTE_LOG_TAG, "Process %d dumped core",
                     (int) pid);
             }
 #endif /* ifdef WCOREDUMP */
@@ -102,7 +121,7 @@ static void sigchldHandler(int s)
          * from there.
          */
         if (pid == gDvm.systemServerPid) {
-            LOG(LOG_INFO, ZYGOTE_LOG_TAG,
+            ALOG(LOG_INFO, ZYGOTE_LOG_TAG,
                 "Exit zygote because system server (%d) has terminated",
                 (int) pid);
             kill(getpid(), SIGKILL);
@@ -110,7 +129,7 @@ static void sigchldHandler(int s)
     }
 
     if (pid < 0) {
-        LOG(LOG_WARN, ZYGOTE_LOG_TAG,
+        ALOG(LOG_WARN, ZYGOTE_LOG_TAG,
             "Zygote SIGCHLD error in waitpid: %s",strerror(errno));
     }
 }
@@ -136,7 +155,7 @@ static void setSignalHandler()
     err = sigaction (SIGCHLD, &sa, NULL);
 
     if (err < 0) {
-        LOGW("Error setting SIGCHLD handler: %s", strerror(errno));
+        ALOGW("Error setting SIGCHLD handler: %s", strerror(errno));
     }
 }
 
@@ -155,7 +174,7 @@ static void unsetSignalHandler()
     err = sigaction (SIGCHLD, &sa, NULL);
 
     if (err < 0) {
-        LOGW("Error unsetting SIGCHLD handler: %s", strerror(errno));
+        ALOGW("Error unsetting SIGCHLD handler: %s", strerror(errno));
     }
 }
 
@@ -212,7 +231,7 @@ static int setrlimitsFromArray(ArrayObject* rlimits)
         int err;
 
         if (rlimit_tuple->length != 3) {
-            LOGE("rlimits array must have a second dimension of size 3");
+            ALOGE("rlimits array must have a second dimension of size 3");
             return -1;
         }
 
@@ -224,6 +243,120 @@ static int setrlimitsFromArray(ArrayObject* rlimits)
         if (err < 0) {
             return -1;
         }
+    }
+
+    return 0;
+}
+
+/*
+ * Create a private mount namespace and bind mount appropriate emulated
+ * storage for the given user.
+ */
+static int mountEmulatedStorage(uid_t uid, u4 mountMode) {
+    // See storage config details at http://source.android.com/tech/storage/
+    userid_t userid = multiuser_get_user_id(uid);
+
+    // Create a second private mount namespace for our process
+    if (unshare(CLONE_NEWNS) == -1) {
+        ALOGE("Failed to unshare(): %s", strerror(errno));
+        return -1;
+    }
+
+    // Create bind mounts to expose external storage
+    if (mountMode == MOUNT_EXTERNAL_MULTIUSER
+            || mountMode == MOUNT_EXTERNAL_MULTIUSER_ALL) {
+        // These paths must already be created by init.rc
+        const char* source = getenv("EMULATED_STORAGE_SOURCE");
+        const char* target = getenv("EMULATED_STORAGE_TARGET");
+        const char* legacy = getenv("EXTERNAL_STORAGE");
+        if (source == NULL || target == NULL || legacy == NULL) {
+            ALOGE("Storage environment undefined; unable to provide external storage");
+            return -1;
+        }
+
+        // Prepare source paths
+        char source_user[PATH_MAX];
+        char source_obb[PATH_MAX];
+        char target_user[PATH_MAX];
+
+        // /mnt/shell/emulated/0
+        snprintf(source_user, PATH_MAX, "%s/%d", source, userid);
+        // /mnt/shell/emulated/obb
+        snprintf(source_obb, PATH_MAX, "%s/obb", source);
+        // /storage/emulated/0
+        snprintf(target_user, PATH_MAX, "%s/%d", target, userid);
+
+        if (fs_prepare_dir(source_user, 0000, 0, 0) == -1
+                || fs_prepare_dir(source_obb, 0000, 0, 0) == -1
+                || fs_prepare_dir(target_user, 0000, 0, 0) == -1) {
+            return -1;
+        }
+
+        // Unfortunately bind mounts from outside ANDROID_STORAGE retain the
+        // recursive-shared property (kernel bug?).  This means any additional bind
+        // mounts (e.g., /storage/emulated/0/Android/obb) will also appear, shared
+        // in all namespaces, at their respective source paths (e.g.,
+        // /mnt/shell/emulated/0/Android/obb), leading to hundreds of
+        // /proc/mounts-visible bind mounts.  As a workaround, mark
+        // EMULATED_STORAGE_SOURCE (e.g., /mnt/shell/emulated) also a slave so that
+        // subsequent bind mounts are confined to this namespace.  Note,
+        // EMULATED_STORAGE_SOURCE must already serve as a mountpoint, which it
+        // should for the "sdcard" fuse volume.
+        if (mount(NULL, source, NULL, (MS_SLAVE | MS_REC), NULL) == -1) {
+            SLOGW("Failed to mount %s as MS_SLAVE: %s", source, strerror(errno));
+
+            // Fallback: Mark rootfs as slave.  All mounts under "/" will be hidden
+            // from other apps and users.  This shouldn't happen unless the sdcard
+            // service is broken.
+            if (mount("rootfs", "/", NULL, (MS_SLAVE | MS_REC), NULL) == -1) {
+                SLOGE("Failed to mount rootfs as MS_SLAVE: %s", strerror(errno));
+                return -1;
+            }
+        }
+
+        if (mountMode == MOUNT_EXTERNAL_MULTIUSER_ALL) {
+            // Mount entire external storage tree for all users
+            if (mount(source, target, NULL, MS_BIND, NULL) == -1) {
+                ALOGE("Failed to mount %s to %s: %s", source, target, strerror(errno));
+                return -1;
+            }
+        } else {
+            // Only mount user-specific external storage
+            if (mount(source_user, target_user, NULL, MS_BIND, NULL) == -1) {
+                ALOGE("Failed to mount %s to %s: %s", source_user, target_user, strerror(errno));
+                return -1;
+            }
+        }
+
+        // Now that user is mounted, prepare and mount OBB storage
+        // into place for current user
+        char target_android[PATH_MAX];
+        char target_obb[PATH_MAX];
+
+        // /storage/emulated/0/Android
+        snprintf(target_android, PATH_MAX, "%s/%d/Android", target, userid);
+        // /storage/emulated/0/Android/obb
+        snprintf(target_obb, PATH_MAX, "%s/%d/Android/obb", target, userid);
+
+        if (fs_prepare_dir(target_android, 0000, 0, 0) == -1
+                || fs_prepare_dir(target_obb, 0000, 0, 0) == -1
+                || fs_prepare_dir(legacy, 0000, 0, 0) == -1) {
+            return -1;
+        }
+        if (mount(source_obb, target_obb, NULL, MS_BIND, NULL) == -1) {
+            ALOGE("Failed to mount %s to %s: %s", source_obb, target_obb, strerror(errno));
+            return -1;
+        }
+
+        // Finally, mount user-specific path into place for legacy users
+        if (mount(target_user, legacy, NULL, MS_BIND | MS_REC, NULL) == -1) {
+            ALOGE("Failed to mount %s to %s: %s", target_user, legacy, strerror(errno));
+            return -1;
+        }
+
+    } else {
+        ALOGE("Mount mode %d unsupported", mountMode);
+        return -1;
     }
 
     return 0;
@@ -242,7 +375,7 @@ static void Dalvik_dalvik_system_Zygote_fork(const u4* args, JValue* pResult)
     }
 
     if (!dvmGcPreZygoteFork()) {
-        LOGE("pre-fork heap failed");
+        ALOGE("pre-fork heap failed");
         dvmAbort();
     }
 
@@ -283,7 +416,7 @@ static void Dalvik_dalvik_system_Zygote_fork(const u4* args, JValue* pResult)
  */
 static void enableDebugFeatures(u4 debugFlags)
 {
-    LOGV("debugFlags is 0x%02x", debugFlags);
+    ALOGV("debugFlags is 0x%02x", debugFlags);
 
     gDvm.jdwpAllowed = ((debugFlags & DEBUG_ENABLE_DEBUGGER) != 0);
 
@@ -318,14 +451,14 @@ static void enableDebugFeatures(u4 debugFlags)
          * to disable that
          */
         if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
-            LOGE("could not set dumpable bit flag for pid %d: %s",
+            ALOGE("could not set dumpable bit flag for pid %d: %s",
                  getpid(), strerror(errno));
         } else {
             struct rlimit rl;
             rl.rlim_cur = 0;
             rl.rlim_max = RLIM_INFINITY;
             if (setrlimit(RLIMIT_CORE, &rl) < 0) {
-                LOGE("could not disable core file generation for pid %d: %s",
+                ALOGE("could not disable core file generation for pid %d: %s",
                     getpid(), strerror(errno));
             }
         }
@@ -353,13 +486,30 @@ static int setCapabilities(int64_t permitted, int64_t effective)
     capdata.effective = effective;
     capdata.permitted = permitted;
 
-    LOGV("CAPSET perm=%llx eff=%llx", permitted, effective);
+    ALOGV("CAPSET perm=%llx eff=%llx", permitted, effective);
     if (capset(&capheader, &capdata) != 0)
         return errno;
 #endif /*HAVE_ANDROID_OS*/
 
     return 0;
 }
+
+#ifdef HAVE_SELINUX
+/*
+ * Set SELinux security context.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int setSELinuxContext(uid_t uid, bool isSystemServer,
+                             const char *seInfo, const char *niceName)
+{
+#ifdef HAVE_ANDROID_OS
+    return selinux_android_setcontext(uid, isSystemServer, seInfo, niceName);
+#else
+    return 0;
+#endif
+}
+#endif
 
 /*
  * Basic KSM Support
@@ -430,7 +580,12 @@ static pid_t forkAndSpecializeCommon(const u4* args, bool isSystemServer)
     ArrayObject* gids = (ArrayObject *)args[2];
     u4 debugFlags = args[3];
     ArrayObject *rlimits = (ArrayObject *)args[4];
+    u4 mountMode = MOUNT_EXTERNAL_NONE;
     int64_t permittedCapabilities, effectiveCapabilities;
+#ifdef HAVE_SELINUX
+    char *seInfo = NULL;
+    char *niceName = NULL;
+#endif
 
     if (isSystemServer) {
         /*
@@ -443,7 +598,26 @@ static pid_t forkAndSpecializeCommon(const u4* args, bool isSystemServer)
         permittedCapabilities = args[5] | (int64_t) args[6] << 32;
         effectiveCapabilities = args[7] | (int64_t) args[8] << 32;
     } else {
+        mountMode = args[5];
         permittedCapabilities = effectiveCapabilities = 0;
+#ifdef HAVE_SELINUX
+        StringObject* seInfoObj = (StringObject*)args[6];
+        if (seInfoObj) {
+            seInfo = dvmCreateCstrFromString(seInfoObj);
+            if (!seInfo) {
+                ALOGE("seInfo dvmCreateCstrFromString failed");
+                dvmAbort();
+            }
+        }
+        StringObject* niceNameObj = (StringObject*)args[7];
+        if (niceNameObj) {
+            niceName = dvmCreateCstrFromString(niceNameObj);
+            if (!niceName) {
+                ALOGE("niceName dvmCreateCstrFromString failed");
+                dvmAbort();
+            }
+        }
+#endif
     }
 
     if (!gDvm.zygote) {
@@ -454,7 +628,7 @@ static pid_t forkAndSpecializeCommon(const u4* args, bool isSystemServer)
     }
 
     if (!dvmGcPreZygoteFork()) {
-        LOGE("pre-fork heap failed");
+        ALOGE("pre-fork heap failed");
         dvmAbort();
     }
 
@@ -476,51 +650,85 @@ static pid_t forkAndSpecializeCommon(const u4* args, bool isSystemServer)
             err = prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0);
 
             if (err < 0) {
-                LOGE("cannot PR_SET_KEEPCAPS: %s", strerror(errno));
+                ALOGE("cannot PR_SET_KEEPCAPS: %s", strerror(errno));
                 dvmAbort();
             }
         }
 
 #endif /* HAVE_ANDROID_OS */
 
-        err = setgroupsIntarray(gids);
+        if (mountMode != MOUNT_EXTERNAL_NONE) {
+            err = mountEmulatedStorage(uid, mountMode);
+            if (err < 0) {
+                ALOGE("cannot mountExternalStorage(): %s", strerror(errno));
 
+                if (errno == ENOTCONN || errno == EROFS) {
+                    // When device is actively encrypting, we get ENOTCONN here
+                    // since FUSE was mounted before the framework restarted.
+                    // When encrypted device is booting, we get EROFS since
+                    // FUSE hasn't been created yet by init.
+                    // In either case, continue without external storage.
+                } else {
+                    dvmAbort();
+                }
+            }
+        }
+
+        err = setgroupsIntarray(gids);
         if (err < 0) {
-            LOGE("cannot setgroups(): %s", strerror(errno));
+            ALOGE("cannot setgroups(): %s", strerror(errno));
             dvmAbort();
         }
 
         err = setrlimitsFromArray(rlimits);
-
         if (err < 0) {
-            LOGE("cannot setrlimit(): %s", strerror(errno));
+            ALOGE("cannot setrlimit(): %s", strerror(errno));
             dvmAbort();
         }
 
         err = setgid(gid);
         if (err < 0) {
-            LOGE("cannot setgid(%d): %s", gid, strerror(errno));
+            ALOGE("cannot setgid(%d): %s", gid, strerror(errno));
             dvmAbort();
         }
 
         err = setuid(uid);
         if (err < 0) {
-            LOGE("cannot setuid(%d): %s", uid, strerror(errno));
+            ALOGE("cannot setuid(%d): %s", uid, strerror(errno));
             dvmAbort();
         }
 
         int current = personality(0xffffFFFF);
         int success = personality((ADDR_NO_RANDOMIZE | current));
         if (success == -1) {
-          LOGW("Personality switch failed. current=%d error=%d\n", current, errno);
+          ALOGW("Personality switch failed. current=%d error=%d\n", current, errno);
         }
 
         err = setCapabilities(permittedCapabilities, effectiveCapabilities);
         if (err != 0) {
-            LOGE("cannot set capabilities (%llx,%llx): %s",
+            ALOGE("cannot set capabilities (%llx,%llx): %s",
                 permittedCapabilities, effectiveCapabilities, strerror(err));
             dvmAbort();
         }
+
+        err = set_sched_policy(0, SP_DEFAULT);
+        if (err < 0) {
+            ALOGE("cannot set_sched_policy(0, SP_DEFAULT): %s", strerror(-err));
+            dvmAbort();
+        }
+
+#ifdef HAVE_SELINUX
+        err = setSELinuxContext(uid, isSystemServer, seInfo, niceName);
+        if (err < 0) {
+            ALOGE("cannot set SELinux context: %s\n", strerror(errno));
+            dvmAbort();
+        }
+        // These free(3) calls are safe because we know we're only ever forking
+        // a single-threaded process, so we know no other thread held the heap
+        // lock when we forked.
+        free(seInfo);
+        free(niceName);
+#endif
 
         /*
          * Our system thread ID has changed.  Get the new one.
@@ -534,19 +742,25 @@ static pid_t forkAndSpecializeCommon(const u4* args, bool isSystemServer)
         unsetSignalHandler();
         gDvm.zygote = false;
         if (!dvmInitAfterZygote()) {
-            LOGE("error in post-zygote initialization");
+            ALOGE("error in post-zygote initialization");
             dvmAbort();
         }
         pushAnonymousPagesToKSM();
     } else if (pid > 0) {
         /* the parent process */
+#ifdef HAVE_SELINUX
+        free(seInfo);
+        free(niceName);
+#endif
     }
 
     return pid;
 }
 
-/* native public static int forkAndSpecialize(int uid, int gid,
- *     int[] gids, int debugFlags);
+/*
+ * native public static int nativeForkAndSpecialize(int uid, int gid,
+ *     int[] gids, int debugFlags, int[][] rlimits, int mountExternal,
+ *     String seInfo, String niceName);
  */
 static void Dalvik_dalvik_system_Zygote_forkAndSpecialize(const u4* args,
     JValue* pResult)
@@ -558,9 +772,10 @@ static void Dalvik_dalvik_system_Zygote_forkAndSpecialize(const u4* args,
     RETURN_INT(pid);
 }
 
-/* native public static int forkSystemServer(int uid, int gid,
- *     int[] gids, int debugFlags, long permittedCapabilities,
- *     long effectiveCapabilities);
+/*
+ * native public static int nativeForkSystemServer(int uid, int gid,
+ *     int[] gids, int debugFlags, int[][] rlimits,
+ *     long permittedCapabilities, long effectiveCapabilities);
  */
 static void Dalvik_dalvik_system_Zygote_forkSystemServer(
         const u4* args, JValue* pResult)
@@ -572,14 +787,14 @@ static void Dalvik_dalvik_system_Zygote_forkSystemServer(
     if (pid > 0) {
         int status;
 
-        LOGI("System server process %d has been created", pid);
+        ALOGI("System server process %d has been created", pid);
         gDvm.systemServerPid = pid;
         /* There is a slight window that the system server process has crashed
          * but it went unnoticed because we haven't published its pid yet. So
          * we recheck here just to make sure that all is well.
          */
         if (waitpid(pid, &status, WNOHANG) == pid) {
-            LOGE("System server process %d has died. Restarting Zygote!", pid);
+            ALOGE("System server process %d has died. Restarting Zygote!", pid);
             kill(getpid(), SIGKILL);
         }
     }
@@ -596,7 +811,7 @@ static void Dalvik_dalvik_system_Zygote_execShell(
     const char *argp[] = {_PATH_BSHELL, "-c", NULL, NULL};
     argp[2] = dvmCreateCstrFromString(command);
 
-    LOGI("Exec: %s %s %s", argp[0], argp[1], argp[2]);
+    ALOGI("Exec: %s %s %s", argp[0], argp[1], argp[2]);
 
     execv(_PATH_BSHELL, (char**)argp);
     exit(127);
@@ -605,7 +820,7 @@ static void Dalvik_dalvik_system_Zygote_execShell(
 const DalvikNativeMethod dvm_dalvik_system_Zygote[] = {
     { "nativeFork", "()I",
       Dalvik_dalvik_system_Zygote_fork },
-    { "nativeForkAndSpecialize", "(II[II[[I)I",
+    { "nativeForkAndSpecialize", "(II[II[[IILjava/lang/String;Ljava/lang/String;)I",
       Dalvik_dalvik_system_Zygote_forkAndSpecialize },
     { "nativeForkSystemServer", "(II[II[[IJJ)I",
       Dalvik_dalvik_system_Zygote_forkSystemServer },

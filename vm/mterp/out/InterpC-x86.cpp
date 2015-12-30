@@ -68,6 +68,14 @@
 #if defined(__ARM_EABI__)
 # define NO_UNALIGN_64__UNION
 #endif
+/*
+ * MIPS ABI requires 64-bit alignment for access to 64-bit data types.
+ *
+ * Use memcpy() to do the transfer
+ */
+#if defined(__mips__)
+/* # define NO_UNALIGN_64__UNION */
+#endif
 
 
 //#define LOG_INSTR                   /* verbose debugging */
@@ -102,7 +110,7 @@
         {                                                                   \
             char* desc;                                                     \
             desc = dexProtoCopyMethodDescriptor(&curMethod->prototype);     \
-            LOGE("Invalid branch %d at 0x%04x in %s.%s %s",                 \
+            ALOGE("Invalid branch %d at 0x%04x in %s.%s %s",                 \
                 myoff, (int) (pc - curMethod->insns),                       \
                 curMethod->clazz->descriptor, curMethod->name, desc);       \
             free(desc);                                                     \
@@ -128,10 +136,10 @@
         char debugStrBuf[128];                                              \
         snprintf(debugStrBuf, sizeof(debugStrBuf), __VA_ARGS__);            \
         if (curMethod != NULL)                                              \
-            LOG(_level, LOG_TAG"i", "%-2d|%04x%s",                          \
+            ALOG(_level, LOG_TAG"i", "%-2d|%04x%s",                          \
                 self->threadId, (int)(pc - curMethod->insns), debugStrBuf); \
         else                                                                \
-            LOG(_level, LOG_TAG"i", "%-2d|####%s",                          \
+            ALOG(_level, LOG_TAG"i", "%-2d|####%s",                          \
                 self->threadId, debugStrBuf);                               \
     } while(false)
 void dvmDumpRegs(const Method* method, const u4* framePtr, bool inOnly);
@@ -320,15 +328,15 @@ static inline bool checkForNull(Object* obj)
         return false;
     }
 #ifdef WITH_EXTRA_OBJECT_VALIDATION
-    if (!dvmIsHeapAddressObject(obj)) {
-        LOGE("Invalid object %p", obj);
+    if (!dvmIsHeapAddress(obj)) {
+        ALOGE("Invalid object %p", obj);
         dvmAbort();
     }
 #endif
 #ifndef NDEBUG
     if (obj->clazz == NULL || ((u4) obj->clazz) <= 65536) {
         /* probable heap corruption */
-        LOGE("Invalid object class %p (in %p)", obj->clazz, obj);
+        ALOGE("Invalid object class %p (in %p)", obj->clazz, obj);
         dvmAbort();
     }
 #endif
@@ -353,14 +361,14 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
     }
 #ifdef WITH_EXTRA_OBJECT_VALIDATION
     if (!dvmIsHeapAddress(obj)) {
-        LOGE("Invalid object %p", obj);
+        ALOGE("Invalid object %p", obj);
         dvmAbort();
     }
 #endif
 #ifndef NDEBUG
     if (obj->clazz == NULL || ((u4) obj->clazz) <= 65536) {
         /* probable heap corruption */
-        LOGE("Invalid object class %p (in %p)", obj->clazz, obj);
+        ALOGE("Invalid object class %p (in %p)", obj->clazz, obj);
         dvmAbort();
     }
 #endif
@@ -452,6 +460,8 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
     }
 #endif
 
+#define FINISH_BKPT(_opcode)       /* FIXME? */
+#define DISPATCH_EXTENDED(_opcode) /* FIXME? */
 
 /*
  * The "goto label" statements turn into function calls followed by
@@ -471,9 +481,9 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
         return;                                                             \
     } while(false)
 
-#define GOTO_invoke(_target, _methodCallRange, _jumboFormat)                \
+#define GOTO_invoke(_target, _methodCallRange)                              \
     do {                                                                    \
-        dvmMterp_##_target(self, _methodCallRange, _jumboFormat);           \
+        dvmMterp_##_target(self, _methodCallRange);                         \
         return;                                                             \
     } while(false)
 
@@ -488,7 +498,7 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
  * As a special case, "goto bail" turns into a longjmp.
  */
 #define GOTO_bail()                                                         \
-    dvmMterpStdBail(self, false);
+    dvmMterpStdBail(self)
 
 /*
  * Periodically check for thread suspension.
@@ -505,14 +515,14 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
 
 /* File: c/opcommon.cpp */
 /* forward declarations of goto targets */
-GOTO_TARGET_DECL(filledNewArray, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeVirtual, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeSuper, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeInterface, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeDirect, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeStatic, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeVirtualQuick, bool methodCallRange, bool jumboFormat);
-GOTO_TARGET_DECL(invokeSuperQuick, bool methodCallRange, bool jumboFormat);
+GOTO_TARGET_DECL(filledNewArray, bool methodCallRange);
+GOTO_TARGET_DECL(invokeVirtual, bool methodCallRange);
+GOTO_TARGET_DECL(invokeSuper, bool methodCallRange);
+GOTO_TARGET_DECL(invokeInterface, bool methodCallRange);
+GOTO_TARGET_DECL(invokeDirect, bool methodCallRange);
+GOTO_TARGET_DECL(invokeStatic, bool methodCallRange);
+GOTO_TARGET_DECL(invokeVirtualQuick, bool methodCallRange);
+GOTO_TARGET_DECL(invokeSuperQuick, bool methodCallRange);
 GOTO_TARGET_DECL(invokeMethod, bool methodCallRange, const Method* methodToCall,
     u2 count, u2 regs);
 GOTO_TARGET_DECL(returnFromMethod);
@@ -1031,37 +1041,10 @@ GOTO_TARGET_DECL(exceptionThrown);
         }                                                                   \
         SET_REGISTER##_regsize(vdst,                                        \
             dvmGetField##_ftype(obj, ifield->byteOffset));                  \
-        ILOGV("+ IGET '%s'=0x%08llx", ifield->field.name,                   \
+        ILOGV("+ IGET '%s'=0x%08llx", ifield->name,                         \
             (u8) GET_REGISTER##_regsize(vdst));                             \
     }                                                                       \
     FINISH(2);
-
-#define HANDLE_IGET_X_JUMBO(_opcode, _opname, _ftype, _regsize)             \
-    HANDLE_OPCODE(_opcode /*vBBBB, vCCCC, class@AAAAAAAA*/)                 \
-    {                                                                       \
-        InstField* ifield;                                                  \
-        Object* obj;                                                        \
-        EXPORT_PC();                                                        \
-        ref = FETCH(1) | (u4)FETCH(2) << 16;   /* field ref */              \
-        vdst = FETCH(3);                                                    \
-        vsrc1 = FETCH(4);                      /* object ptr */             \
-        ILOGV("|iget%s/jumbo v%d,v%d,field@0x%08x",                         \
-            (_opname), vdst, vsrc1, ref);                                   \
-        obj = (Object*) GET_REGISTER(vsrc1);                                \
-        if (!checkForNull(obj))                                             \
-            GOTO_exceptionThrown();                                         \
-        ifield = (InstField*) dvmDexGetResolvedField(methodClassDex, ref);  \
-        if (ifield == NULL) {                                               \
-            ifield = dvmResolveInstField(curMethod->clazz, ref);            \
-            if (ifield == NULL)                                             \
-                GOTO_exceptionThrown();                                     \
-        }                                                                   \
-        SET_REGISTER##_regsize(vdst,                                        \
-            dvmGetField##_ftype(obj, ifield->byteOffset));                  \
-        ILOGV("+ IGET '%s'=0x%08llx", ifield->field.name,                   \
-            (u8) GET_REGISTER##_regsize(vdst));                             \
-    }                                                                       \
-    FINISH(5);
 
 #define HANDLE_IGET_X_QUICK(_opcode, _opname, _ftype, _regsize)             \
     HANDLE_OPCODE(_opcode /*vA, vB, field@CCCC*/)                           \
@@ -1102,37 +1085,10 @@ GOTO_TARGET_DECL(exceptionThrown);
         }                                                                   \
         dvmSetField##_ftype(obj, ifield->byteOffset,                        \
             GET_REGISTER##_regsize(vdst));                                  \
-        ILOGV("+ IPUT '%s'=0x%08llx", ifield->field.name,                   \
+        ILOGV("+ IPUT '%s'=0x%08llx", ifield->name,                         \
             (u8) GET_REGISTER##_regsize(vdst));                             \
     }                                                                       \
     FINISH(2);
-
-#define HANDLE_IPUT_X_JUMBO(_opcode, _opname, _ftype, _regsize)             \
-    HANDLE_OPCODE(_opcode /*vBBBB, vCCCC, class@AAAAAAAA*/)                 \
-    {                                                                       \
-        InstField* ifield;                                                  \
-        Object* obj;                                                        \
-        EXPORT_PC();                                                        \
-        ref = FETCH(1) | (u4)FETCH(2) << 16;   /* field ref */              \
-        vdst = FETCH(3);                                                    \
-        vsrc1 = FETCH(4);                      /* object ptr */             \
-        ILOGV("|iput%s/jumbo v%d,v%d,field@0x%08x",                         \
-            (_opname), vdst, vsrc1, ref);                                   \
-        obj = (Object*) GET_REGISTER(vsrc1);                                \
-        if (!checkForNull(obj))                                             \
-            GOTO_exceptionThrown();                                         \
-        ifield = (InstField*) dvmDexGetResolvedField(methodClassDex, ref);  \
-        if (ifield == NULL) {                                               \
-            ifield = dvmResolveInstField(curMethod->clazz, ref);            \
-            if (ifield == NULL)                                             \
-                GOTO_exceptionThrown();                                     \
-        }                                                                   \
-        dvmSetField##_ftype(obj, ifield->byteOffset,                        \
-            GET_REGISTER##_regsize(vdst));                                  \
-        ILOGV("+ IPUT '%s'=0x%08llx", ifield->field.name,                   \
-            (u8) GET_REGISTER##_regsize(vdst));                             \
-    }                                                                       \
-    FINISH(5);
 
 #define HANDLE_IPUT_X_QUICK(_opcode, _opname, _ftype, _regsize)             \
     HANDLE_OPCODE(_opcode /*vA, vB, field@CCCC*/)                           \
@@ -1179,32 +1135,9 @@ GOTO_TARGET_DECL(exceptionThrown);
         }                                                                   \
         SET_REGISTER##_regsize(vdst, dvmGetStaticField##_ftype(sfield));    \
         ILOGV("+ SGET '%s'=0x%08llx",                                       \
-            sfield->field.name, (u8)GET_REGISTER##_regsize(vdst));          \
+            sfield->name, (u8)GET_REGISTER##_regsize(vdst));                \
     }                                                                       \
     FINISH(2);
-
-#define HANDLE_SGET_X_JUMBO(_opcode, _opname, _ftype, _regsize)             \
-    HANDLE_OPCODE(_opcode /*vBBBB, class@AAAAAAAA*/)                        \
-    {                                                                       \
-        StaticField* sfield;                                                \
-        ref = FETCH(1) | (u4)FETCH(2) << 16;   /* field ref */              \
-        vdst = FETCH(3);                                                    \
-        ILOGV("|sget%s/jumbo v%d,sfield@0x%08x", (_opname), vdst, ref);     \
-        sfield = (StaticField*)dvmDexGetResolvedField(methodClassDex, ref); \
-        if (sfield == NULL) {                                               \
-            EXPORT_PC();                                                    \
-            sfield = dvmResolveStaticField(curMethod->clazz, ref);          \
-            if (sfield == NULL)                                             \
-                GOTO_exceptionThrown();                                     \
-            if (dvmDexGetResolvedField(methodClassDex, ref) == NULL) {      \
-                JIT_STUB_HACK(dvmJitEndTraceSelect(self,pc));               \
-            }                                                               \
-        }                                                                   \
-        SET_REGISTER##_regsize(vdst, dvmGetStaticField##_ftype(sfield));    \
-        ILOGV("+ SGET '%s'=0x%08llx",                                       \
-            sfield->field.name, (u8)GET_REGISTER##_regsize(vdst));          \
-    }                                                                       \
-    FINISH(4);
 
 #define HANDLE_SPUT_X(_opcode, _opname, _ftype, _regsize)                   \
     HANDLE_OPCODE(_opcode /*vAA, field@BBBB*/)                              \
@@ -1225,32 +1158,9 @@ GOTO_TARGET_DECL(exceptionThrown);
         }                                                                   \
         dvmSetStaticField##_ftype(sfield, GET_REGISTER##_regsize(vdst));    \
         ILOGV("+ SPUT '%s'=0x%08llx",                                       \
-            sfield->field.name, (u8)GET_REGISTER##_regsize(vdst));          \
+            sfield->name, (u8)GET_REGISTER##_regsize(vdst));                \
     }                                                                       \
     FINISH(2);
-
-#define HANDLE_SPUT_X_JUMBO(_opcode, _opname, _ftype, _regsize)             \
-    HANDLE_OPCODE(_opcode /*vBBBB, class@AAAAAAAA*/)                        \
-    {                                                                       \
-        StaticField* sfield;                                                \
-        ref = FETCH(1) | (u4)FETCH(2) << 16;   /* field ref */              \
-        vdst = FETCH(3);                                                    \
-        ILOGV("|sput%s/jumbo v%d,sfield@0x%08x", (_opname), vdst, ref);     \
-        sfield = (StaticField*)dvmDexGetResolvedField(methodClassDex, ref); \
-        if (sfield == NULL) {                                               \
-            EXPORT_PC();                                                    \
-            sfield = dvmResolveStaticField(curMethod->clazz, ref);          \
-            if (sfield == NULL)                                             \
-                GOTO_exceptionThrown();                                     \
-            if (dvmDexGetResolvedField(methodClassDex, ref) == NULL) {      \
-                JIT_STUB_HACK(dvmJitEndTraceSelect(self,pc));               \
-            }                                                               \
-        }                                                                   \
-        dvmSetStaticField##_ftype(sfield, GET_REGISTER##_regsize(vdst));    \
-        ILOGV("+ SPUT '%s'=0x%08llx",                                       \
-            sfield->field.name, (u8)GET_REGISTER##_regsize(vdst));          \
-    }                                                                       \
-    FINISH(4);
 
 /* File: c/OP_IGET_WIDE_VOLATILE.cpp */
 HANDLE_IGET_X(OP_IGET_WIDE_VOLATILE,    "-wide-volatile", LongVolatile, _WIDE)
@@ -1302,7 +1212,7 @@ HANDLE_OPCODE(OP_EXECUTE_INLINE_RANGE /*{vCCCC..v(CCCC+AA-1)}, inline@BBBB*/)
             ;
         }
 
-        if (self->interpBreak.ctl.subMode & kSubModeDebuggerActive) {
+        if (self->interpBreak.ctl.subMode & kSubModeDebugProfile) {
             if (!dvmPerformInlineOp4Dbg(arg0, arg1, arg2, arg3, &retval, ref))
                 GOTO_exceptionThrown();
         } else {
@@ -1338,7 +1248,7 @@ HANDLE_OPCODE(OP_INVOKE_OBJECT_INIT_RANGE /*{vCCCC..v(CCCC+AA-1)}, meth@BBBB*/)
 
         if (self->interpBreak.ctl.subMode & kSubModeDebuggerActive) {
             /* behave like OP_INVOKE_DIRECT_RANGE */
-            GOTO_invoke(invokeDirect, true, false);
+            GOTO_invoke(invokeDirect, true);
         }
         FINISH(3);
     }
@@ -1354,85 +1264,6 @@ HANDLE_OPCODE(OP_RETURN_VOID_BARRIER /**/)
     GOTO_returnFromMethod();
 OP_END
 
-/* File: c/OP_INVOKE_OBJECT_INIT_JUMBO.cpp */
-HANDLE_OPCODE(OP_INVOKE_OBJECT_INIT_JUMBO /*{vCCCC..vNNNN}, meth@AAAAAAAA*/)
-    {
-        Object* obj;
-
-        vsrc1 = FETCH(4);               /* reg number of "this" pointer */
-        obj = GET_REGISTER_AS_OBJECT(vsrc1);
-
-        if (!checkForNullExportPC(obj, fp, pc))
-            GOTO_exceptionThrown();
-
-        /*
-         * The object should be marked "finalizable" when Object.<init>
-         * completes normally.  We're going to assume it does complete
-         * (by virtue of being nothing but a return-void) and set it now.
-         */
-        if (IS_CLASS_FLAG_SET(obj->clazz, CLASS_ISFINALIZABLE)) {
-            EXPORT_PC();
-            dvmSetFinalizable(obj);
-            if (dvmGetException(self))
-                GOTO_exceptionThrown();
-        }
-
-        if (self->interpBreak.ctl.subMode & kSubModeDebuggerActive) {
-            /* behave like OP_INVOKE_DIRECT_RANGE */
-            GOTO_invoke(invokeDirect, true, true);
-        }
-        FINISH(5);
-    }
-OP_END
-
-/* File: c/OP_IGET_VOLATILE_JUMBO.cpp */
-HANDLE_IGET_X_JUMBO(OP_IGET_VOLATILE_JUMBO, "-volatile/jumbo", IntVolatile, )
-OP_END
-
-/* File: c/OP_IGET_WIDE_VOLATILE_JUMBO.cpp */
-HANDLE_IGET_X_JUMBO(OP_IGET_WIDE_VOLATILE_JUMBO, "-wide-volatile/jumbo", LongVolatile, _WIDE)
-OP_END
-
-/* File: c/OP_IGET_OBJECT_VOLATILE_JUMBO.cpp */
-HANDLE_IGET_X_JUMBO(OP_IGET_OBJECT_VOLATILE_JUMBO, "-object-volatile/jumbo", ObjectVolatile, _AS_OBJECT)
-OP_END
-
-/* File: c/OP_IPUT_VOLATILE_JUMBO.cpp */
-HANDLE_IPUT_X_JUMBO(OP_IPUT_VOLATILE_JUMBO, "-volatile/jumbo", IntVolatile, )
-OP_END
-
-/* File: c/OP_IPUT_WIDE_VOLATILE_JUMBO.cpp */
-HANDLE_IPUT_X_JUMBO(OP_IPUT_WIDE_VOLATILE_JUMBO, "-wide-volatile/jumbo", LongVolatile, _WIDE)
-OP_END
-
-/* File: c/OP_IPUT_OBJECT_VOLATILE_JUMBO.cpp */
-HANDLE_IPUT_X_JUMBO(OP_IPUT_OBJECT_VOLATILE_JUMBO, "-object-volatile/jumbo", ObjectVolatile, _AS_OBJECT)
-OP_END
-
-/* File: c/OP_SGET_VOLATILE_JUMBO.cpp */
-HANDLE_SGET_X_JUMBO(OP_SGET_VOLATILE_JUMBO, "-volatile/jumbo", IntVolatile, )
-OP_END
-
-/* File: c/OP_SGET_WIDE_VOLATILE_JUMBO.cpp */
-HANDLE_SGET_X_JUMBO(OP_SGET_WIDE_VOLATILE_JUMBO, "-wide-volatile/jumbo", LongVolatile, _WIDE)
-OP_END
-
-/* File: c/OP_SGET_OBJECT_VOLATILE_JUMBO.cpp */
-HANDLE_SGET_X_JUMBO(OP_SGET_OBJECT_VOLATILE_JUMBO, "-object-volatile/jumbo", ObjectVolatile, _AS_OBJECT)
-OP_END
-
-/* File: c/OP_SPUT_VOLATILE_JUMBO.cpp */
-HANDLE_SPUT_X_JUMBO(OP_SPUT_VOLATILE_JUMBO, "-volatile", IntVolatile, )
-OP_END
-
-/* File: c/OP_SPUT_WIDE_VOLATILE_JUMBO.cpp */
-HANDLE_SPUT_X_JUMBO(OP_SPUT_WIDE_VOLATILE_JUMBO, "-wide-volatile/jumbo", LongVolatile, _WIDE)
-OP_END
-
-/* File: c/OP_SPUT_OBJECT_VOLATILE_JUMBO.cpp */
-HANDLE_SPUT_X_JUMBO(OP_SPUT_OBJECT_VOLATILE_JUMBO, "-object-volatile/jumbo", ObjectVolatile, _AS_OBJECT)
-OP_END
-
 /* File: c/gotoTargets.cpp */
 /*
  * C footer.  This has some common code shared by the various targets.
@@ -1444,7 +1275,7 @@ OP_END
  * next instruction.  Here, these are subroutines that return to the caller.
  */
 
-GOTO_TARGET(filledNewArray, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(filledNewArray, bool methodCallRange, bool)
     {
         ClassObject* arrayClass;
         ArrayObject* newArray;
@@ -1455,28 +1286,19 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool jumboFormat)
 
         EXPORT_PC();
 
-        if (jumboFormat) {
-            ref = FETCH(1) | (u4)FETCH(2) << 16;  /* class ref */
-            vsrc1 = FETCH(3);                     /* #of elements */
-            vdst = FETCH(4);                      /* range base */
-            arg5 = -1;                            /* silence compiler warning */
-            ILOGV("|filled-new-array/jumbo args=%d @0x%08x {regs=v%d-v%d}",
+        ref = FETCH(1);             /* class ref */
+        vdst = FETCH(2);            /* first 4 regs -or- range base */
+
+        if (methodCallRange) {
+            vsrc1 = INST_AA(inst);  /* #of elements */
+            arg5 = -1;              /* silence compiler warning */
+            ILOGV("|filled-new-array-range args=%d @0x%04x {regs=v%d-v%d}",
                 vsrc1, ref, vdst, vdst+vsrc1-1);
         } else {
-            ref = FETCH(1);             /* class ref */
-            vdst = FETCH(2);            /* first 4 regs -or- range base */
-
-            if (methodCallRange) {
-                vsrc1 = INST_AA(inst);  /* #of elements */
-                arg5 = -1;              /* silence compiler warning */
-                ILOGV("|filled-new-array-range args=%d @0x%04x {regs=v%d-v%d}",
-                    vsrc1, ref, vdst, vdst+vsrc1-1);
-            } else {
-                arg5 = INST_A(inst);
-                vsrc1 = INST_B(inst);   /* #of elements */
-                ILOGV("|filled-new-array args=%d @0x%04x {regs=0x%04x %x}",
-                   vsrc1, ref, vdst, arg5);
-            }
+            arg5 = INST_A(inst);
+            vsrc1 = INST_B(inst);   /* #of elements */
+            ILOGV("|filled-new-array args=%d @0x%04x {regs=0x%04x %x}",
+               vsrc1, ref, vdst, arg5);
         }
 
         /*
@@ -1510,7 +1332,7 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool jumboFormat)
             GOTO_exceptionThrown();
         } else if (typeCh != 'L' && typeCh != '[' && typeCh != 'I') {
             /* TODO: requires multiple "fill in" loops with different widths */
-            LOGE("non-int primitives not implemented");
+            ALOGE("non-int primitives not implemented");
             dvmThrowInternalError(
                 "filled-new-array not implemented for anything but 'int'");
             GOTO_exceptionThrown();
@@ -1544,49 +1366,35 @@ GOTO_TARGET(filledNewArray, bool methodCallRange, bool jumboFormat)
 
         retval.l = (Object*)newArray;
     }
-    if (jumboFormat) {
-        FINISH(5);
-    } else {
-        FINISH(3);
-    }
+    FINISH(3);
 GOTO_TARGET_END
 
 
-GOTO_TARGET(invokeVirtual, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeVirtual, bool methodCallRange, bool)
     {
         Method* baseMethod;
         Object* thisPtr;
 
         EXPORT_PC();
 
-        if (jumboFormat) {
-            ref = FETCH(1) | (u4)FETCH(2) << 16;  /* method ref */
-            vsrc1 = FETCH(3);                     /* count */
-            vdst = FETCH(4);                      /* first reg */
-            ADJUST_PC(2);     /* advance pc partially to make returns easier */
-            ILOGV("|invoke-virtual/jumbo args=%d @0x%08x {regs=v%d-v%d}",
+        vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
+        ref = FETCH(1);             /* method ref */
+        vdst = FETCH(2);            /* 4 regs -or- first reg */
+
+        /*
+         * The object against which we are executing a method is always
+         * in the first argument.
+         */
+        if (methodCallRange) {
+            assert(vsrc1 > 0);
+            ILOGV("|invoke-virtual-range args=%d @0x%04x {regs=v%d-v%d}",
                 vsrc1, ref, vdst, vdst+vsrc1-1);
             thisPtr = (Object*) GET_REGISTER(vdst);
         } else {
-            vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
-            ref = FETCH(1);             /* method ref */
-            vdst = FETCH(2);            /* 4 regs -or- first reg */
-
-            /*
-             * The object against which we are executing a method is always
-             * in the first argument.
-             */
-            if (methodCallRange) {
-                assert(vsrc1 > 0);
-                ILOGV("|invoke-virtual-range args=%d @0x%04x {regs=v%d-v%d}",
-                    vsrc1, ref, vdst, vdst+vsrc1-1);
-                thisPtr = (Object*) GET_REGISTER(vdst);
-            } else {
-                assert((vsrc1>>4) > 0);
-                ILOGV("|invoke-virtual args=%d @0x%04x {regs=0x%04x %x}",
-                    vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
-                thisPtr = (Object*) GET_REGISTER(vdst & 0x0f);
-            }
+            assert((vsrc1>>4) > 0);
+            ILOGV("|invoke-virtual args=%d @0x%04x {regs=0x%04x %x}",
+                vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
+            thisPtr = (Object*) GET_REGISTER(vdst & 0x0f);
         }
 
         if (!checkForNull(thisPtr))
@@ -1644,7 +1452,7 @@ GOTO_TARGET(invokeVirtual, bool methodCallRange, bool jumboFormat)
 
 #if 0
         if (vsrc1 != methodToCall->insSize) {
-            LOGW("WRONG METHOD: base=%s.%s virtual[%d]=%s.%s",
+            ALOGW("WRONG METHOD: base=%s.%s virtual[%d]=%s.%s",
                 baseMethod->clazz->descriptor, baseMethod->name,
                 (u4) baseMethod->methodIndex,
                 methodToCall->clazz->descriptor, methodToCall->name);
@@ -1658,35 +1466,25 @@ GOTO_TARGET(invokeVirtual, bool methodCallRange, bool jumboFormat)
     }
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeSuper, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeSuper, bool methodCallRange)
     {
         Method* baseMethod;
         u2 thisReg;
 
         EXPORT_PC();
 
-        if (jumboFormat) {
-            ref = FETCH(1) | (u4)FETCH(2) << 16;  /* method ref */
-            vsrc1 = FETCH(3);                     /* count */
-            vdst = FETCH(4);                      /* first reg */
-            ADJUST_PC(2);     /* advance pc partially to make returns easier */
-            ILOGV("|invoke-super/jumbo args=%d @0x%08x {regs=v%d-v%d}",
+        vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
+        ref = FETCH(1);             /* method ref */
+        vdst = FETCH(2);            /* 4 regs -or- first reg */
+
+        if (methodCallRange) {
+            ILOGV("|invoke-super-range args=%d @0x%04x {regs=v%d-v%d}",
                 vsrc1, ref, vdst, vdst+vsrc1-1);
             thisReg = vdst;
         } else {
-            vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
-            ref = FETCH(1);             /* method ref */
-            vdst = FETCH(2);            /* 4 regs -or- first reg */
-
-            if (methodCallRange) {
-                ILOGV("|invoke-super-range args=%d @0x%04x {regs=v%d-v%d}",
-                    vsrc1, ref, vdst, vdst+vsrc1-1);
-                thisReg = vdst;
-            } else {
-                ILOGV("|invoke-super args=%d @0x%04x {regs=0x%04x %x}",
-                    vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
-                thisReg = vdst & 0x0f;
-            }
+            ILOGV("|invoke-super args=%d @0x%04x {regs=0x%04x %x}",
+                vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
+            thisReg = vdst & 0x0f;
         }
 
         /* impossible in well-formed code, but we must check nevertheless */
@@ -1746,48 +1544,37 @@ GOTO_TARGET(invokeSuper, bool methodCallRange, bool jumboFormat)
     }
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeInterface, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeInterface, bool methodCallRange)
     {
         Object* thisPtr;
         ClassObject* thisClass;
 
         EXPORT_PC();
 
-        if (jumboFormat) {
-            ref = FETCH(1) | (u4)FETCH(2) << 16;  /* method ref */
-            vsrc1 = FETCH(3);                     /* count */
-            vdst = FETCH(4);                      /* first reg */
-            ADJUST_PC(2);     /* advance pc partially to make returns easier */
-            ILOGV("|invoke-interface/jumbo args=%d @0x%08x {regs=v%d-v%d}",
+        vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
+        ref = FETCH(1);             /* method ref */
+        vdst = FETCH(2);            /* 4 regs -or- first reg */
+
+        /*
+         * The object against which we are executing a method is always
+         * in the first argument.
+         */
+        if (methodCallRange) {
+            assert(vsrc1 > 0);
+            ILOGV("|invoke-interface-range args=%d @0x%04x {regs=v%d-v%d}",
                 vsrc1, ref, vdst, vdst+vsrc1-1);
             thisPtr = (Object*) GET_REGISTER(vdst);
         } else {
-            vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
-            ref = FETCH(1);             /* method ref */
-            vdst = FETCH(2);            /* 4 regs -or- first reg */
-
-            /*
-             * The object against which we are executing a method is always
-             * in the first argument.
-             */
-            if (methodCallRange) {
-                assert(vsrc1 > 0);
-                ILOGV("|invoke-interface-range args=%d @0x%04x {regs=v%d-v%d}",
-                    vsrc1, ref, vdst, vdst+vsrc1-1);
-                thisPtr = (Object*) GET_REGISTER(vdst);
-            } else {
-                assert((vsrc1>>4) > 0);
-                ILOGV("|invoke-interface args=%d @0x%04x {regs=0x%04x %x}",
-                    vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
-                thisPtr = (Object*) GET_REGISTER(vdst & 0x0f);
-            }
+            assert((vsrc1>>4) > 0);
+            ILOGV("|invoke-interface args=%d @0x%04x {regs=0x%04x %x}",
+                vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
+            thisPtr = (Object*) GET_REGISTER(vdst & 0x0f);
         }
 
         if (!checkForNull(thisPtr))
             GOTO_exceptionThrown();
 
         thisClass = thisPtr->clazz;
-
 
         /*
          * Given a class and a method index, find the Method* with the
@@ -1808,34 +1595,24 @@ GOTO_TARGET(invokeInterface, bool methodCallRange, bool jumboFormat)
     }
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeDirect, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeDirect, bool methodCallRange)
     {
         u2 thisReg;
 
         EXPORT_PC();
 
-        if (jumboFormat) {
-            ref = FETCH(1) | (u4)FETCH(2) << 16;  /* method ref */
-            vsrc1 = FETCH(3);                     /* count */
-            vdst = FETCH(4);                      /* first reg */
-            ADJUST_PC(2);     /* advance pc partially to make returns easier */
-            ILOGV("|invoke-direct/jumbo args=%d @0x%08x {regs=v%d-v%d}",
+        vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
+        ref = FETCH(1);             /* method ref */
+        vdst = FETCH(2);            /* 4 regs -or- first reg */
+
+        if (methodCallRange) {
+            ILOGV("|invoke-direct-range args=%d @0x%04x {regs=v%d-v%d}",
                 vsrc1, ref, vdst, vdst+vsrc1-1);
             thisReg = vdst;
         } else {
-            vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
-            ref = FETCH(1);             /* method ref */
-            vdst = FETCH(2);            /* 4 regs -or- first reg */
-
-            if (methodCallRange) {
-                ILOGV("|invoke-direct-range args=%d @0x%04x {regs=v%d-v%d}",
-                    vsrc1, ref, vdst, vdst+vsrc1-1);
-                thisReg = vdst;
-            } else {
-                ILOGV("|invoke-direct args=%d @0x%04x {regs=0x%04x %x}",
-                    vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
-                thisReg = vdst & 0x0f;
-            }
+            ILOGV("|invoke-direct args=%d @0x%04x {regs=0x%04x %x}",
+                vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
+            thisReg = vdst & 0x0f;
         }
 
         if (!checkForNull((Object*) GET_REGISTER(thisReg)))
@@ -1854,28 +1631,19 @@ GOTO_TARGET(invokeDirect, bool methodCallRange, bool jumboFormat)
     }
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeStatic, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeStatic, bool methodCallRange)
     EXPORT_PC();
 
-    if (jumboFormat) {
-        ref = FETCH(1) | (u4)FETCH(2) << 16;  /* method ref */
-        vsrc1 = FETCH(3);                     /* count */
-        vdst = FETCH(4);                      /* first reg */
-        ADJUST_PC(2);     /* advance pc partially to make returns easier */
-        ILOGV("|invoke-static/jumbo args=%d @0x%08x {regs=v%d-v%d}",
-            vsrc1, ref, vdst, vdst+vsrc1-1);
-    } else {
-        vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
-        ref = FETCH(1);             /* method ref */
-        vdst = FETCH(2);            /* 4 regs -or- first reg */
+    vsrc1 = INST_AA(inst);      /* AA (count) or BA (count + arg 5) */
+    ref = FETCH(1);             /* method ref */
+    vdst = FETCH(2);            /* 4 regs -or- first reg */
 
-        if (methodCallRange)
-            ILOGV("|invoke-static-range args=%d @0x%04x {regs=v%d-v%d}",
-                vsrc1, ref, vdst, vdst+vsrc1-1);
-        else
-            ILOGV("|invoke-static args=%d @0x%04x {regs=0x%04x %x}",
-                vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
-    }
+    if (methodCallRange)
+        ILOGV("|invoke-static-range args=%d @0x%04x {regs=v%d-v%d}",
+            vsrc1, ref, vdst, vdst+vsrc1-1);
+    else
+        ILOGV("|invoke-static args=%d @0x%04x {regs=0x%04x %x}",
+            vsrc1 >> 4, ref, vdst, vsrc1 & 0x0f);
 
     methodToCall = dvmDexGetResolvedMethod(methodClassDex, ref);
     if (methodToCall == NULL) {
@@ -1901,7 +1669,7 @@ GOTO_TARGET(invokeStatic, bool methodCallRange, bool jumboFormat)
     GOTO_invokeMethod(methodCallRange, methodToCall, vsrc1, vdst);
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeVirtualQuick, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeVirtualQuick, bool methodCallRange)
     {
         Object* thisPtr;
 
@@ -1960,7 +1728,7 @@ GOTO_TARGET(invokeVirtualQuick, bool methodCallRange, bool jumboFormat)
     }
 GOTO_TARGET_END
 
-GOTO_TARGET(invokeSuperQuick, bool methodCallRange, bool jumboFormat)
+GOTO_TARGET(invokeSuperQuick, bool methodCallRange)
     {
         u2 thisReg;
 
@@ -2081,7 +1849,7 @@ GOTO_TARGET(returnFromMethod)
         {
             FINISH(3);
         } else {
-            //LOGE("Unknown invoke instr %02x at %d",
+            //ALOGE("Unknown invoke instr %02x at %d",
             //    invokeInstr, (int) (pc - curMethod->insns));
             assert(false);
         }
@@ -2113,7 +1881,7 @@ GOTO_TARGET(exceptionThrown)
         dvmAddTrackedAlloc(exception, self);
         dvmClearException(self);
 
-        LOGV("Handling exception %s at %s:%d",
+        ALOGV("Handling exception %s at %s:%d",
             exception->clazz->descriptor, curMethod->name,
             dvmLineNumFromPC(curMethod, pc - curMethod->insns));
 
@@ -2181,7 +1949,7 @@ GOTO_TARGET(exceptionThrown)
         if (catchRelPc < 0) {
             /* falling through to JNI code or off the bottom of the stack */
 #if DVM_SHOW_EXCEPTION >= 2
-            LOGD("Exception %s from %s:%d not caught locally",
+            ALOGD("Exception %s from %s:%d not caught locally",
                 exception->clazz->descriptor, dvmGetMethodSourceFile(curMethod),
                 dvmLineNumFromPC(curMethod, pc - curMethod->insns));
 #endif
@@ -2193,7 +1961,7 @@ GOTO_TARGET(exceptionThrown)
 #if DVM_SHOW_EXCEPTION >= 3
         {
             const Method* catchMethod = SAVEAREA_FROM_FP(fp)->method;
-            LOGD("Exception %s thrown from %s:%d to %s:%d",
+            ALOGD("Exception %s thrown from %s:%d to %s:%d",
                 exception->clazz->descriptor, dvmGetMethodSourceFile(curMethod),
                 dvmLineNumFromPC(curMethod, pc - curMethod->insns),
                 dvmGetMethodSourceFile(catchMethod),
@@ -2343,7 +2111,7 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
             bottom = (u1*) newSaveArea - methodToCall->outsSize * sizeof(u4);
             if (bottom < self->interpStackEnd) {
                 /* stack overflow */
-                LOGV("Stack overflow on method call (start=%p end=%p newBot=%p(%d) size=%d '%s')",
+                ALOGV("Stack overflow on method call (start=%p end=%p newBot=%p(%d) size=%d '%s')",
                     self->interpStackStart, self->interpStackEnd, bottom,
                     (u1*) fp - bottom, self->interpStackSize,
                     methodToCall->name);
@@ -2351,7 +2119,7 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
                 assert(dvmCheckException(self));
                 GOTO_exceptionThrown();
             }
-            //LOGD("+++ fp=%p newFp=%p newSave=%p bottom=%p",
+            //ALOGD("+++ fp=%p newFp=%p newSave=%p bottom=%p",
             //    fp, newFp, newSaveArea, bottom);
         }
 
@@ -2397,7 +2165,8 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
             self->interpSave.method = curMethod;
             methodClassDex = curMethod->clazz->pDvmDex;
             pc = methodToCall->insns;
-            self->interpSave.curFrame = fp = newFp;
+            fp = newFp;
+            self->interpSave.curFrame = fp;
 #ifdef EASY_GDB
             debugSaveArea = SAVEAREA_FROM_FP(newFp);
 #endif
@@ -2415,7 +2184,7 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
             DUMP_REGS(methodToCall, newFp, true);   // show input args
 
             if (self->interpBreak.ctl.subMode != 0) {
-                dvmReportPreNativeInvoke(methodToCall, self, fp);
+                dvmReportPreNativeInvoke(methodToCall, self, newSaveArea->prevFrame);
             }
 
             ILOGD("> native <-- %s.%s %s", methodToCall->clazz->descriptor,
@@ -2429,12 +2198,13 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
             (*methodToCall->nativeFunc)(newFp, &retval, methodToCall, self);
 
             if (self->interpBreak.ctl.subMode != 0) {
-                dvmReportPostNativeInvoke(methodToCall, self, fp);
+                dvmReportPostNativeInvoke(methodToCall, self, newSaveArea->prevFrame);
             }
 
             /* pop frame off */
             dvmPopJniLocals(self, newSaveArea);
-            self->interpSave.curFrame = fp;
+            self->interpSave.curFrame = newSaveArea->prevFrame;
+            fp = newSaveArea->prevFrame;
 
             /*
              * If the native code threw an exception, or interpreted code
@@ -2442,7 +2212,7 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
              * it, jump to our local exception handling.
              */
             if (dvmCheckException(self)) {
-                LOGV("Exception thrown by/below native code");
+                ALOGV("Exception thrown by/below native code");
                 GOTO_exceptionThrown();
             }
 
@@ -2458,7 +2228,7 @@ GOTO_TARGET(invokeMethod, bool methodCallRange, const Method* _methodToCall,
             {
                 FINISH(3);
             } else {
-                //LOGE("Unknown invoke instr %02x at %d",
+                //ALOGE("Unknown invoke instr %02x at %d",
                 //    invokeInstr, (int) (pc - curMethod->insns));
                 assert(false);
             }

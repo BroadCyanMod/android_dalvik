@@ -111,7 +111,7 @@ unspecified registers or condition codes.
 
     .global dvmCompilerTemplateStart
     .type   dvmCompilerTemplateStart, %function
-    .text
+    .section .data.rel.ro
 
 dvmCompilerTemplateStart:
 
@@ -170,20 +170,20 @@ dvmCompiler_TEMPLATE_RETURN:
     stmfd   sp!, {r0-r2,lr}             @ preserve live registers
     mov     r0, r6
     @ r0=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceExit
+    ldr     ip, .LdvmFastMethodTraceExit
+    blx     ip
     ldmfd   sp!, {r0-r2,lr}             @ restore live registers
 #endif
     SAVEAREA_FROM_FP(r0, rFP)           @ r0<- saveArea (old)
     ldr     r10, [r0, #offStackSaveArea_prevFrame] @ r10<- saveArea->prevFrame
     ldrb    r8, [rSELF, #offThread_breakFlags] @ r8<- breakFlags
     ldr     rPC, [r0, #offStackSaveArea_savedPc] @ rPC<- saveArea->savedPc
+    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
 #if !defined(WITH_SELF_VERIFICATION)
     ldr     r9,  [r0, #offStackSaveArea_returnAddr] @ r9<- chaining cell ret
 #else
     mov     r9, #0                      @ disable chaining
 #endif
-    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
                                         @ r2<- method we're returning to
     cmp     r2, #0                      @ break frame?
 #if !defined(WITH_SELF_VERIFICATION)
@@ -272,8 +272,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NO_OPT:
     stmfd   sp!, {r0-r3}                    @ preserve r0-r3
     mov     r1, r6
     @ r0=methodToCall, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r3}                    @ restore r0-r3
 #endif
 
@@ -281,7 +281,7 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NO_OPT:
 #if defined(WITH_JIT_TUNING)
     mov     r0, #kInlineCacheMiss
 #endif
-    mov     pc, r10                         @ dvmJitToInterpTraceSelectNoChain
+    bx      r10                         @ dvmJitToInterpTraceSelectNoChain
 
 /* ------------------------------ */
     .balign 4
@@ -330,8 +330,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_CHAIN:
     stmfd   sp!, {r0-r2,lr}             @ preserve clobbered live registers
     mov     r1, r6
     @ r0=methodToCall, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r2,lr}             @ restore registers
 #endif
 
@@ -453,8 +453,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE:
     mov     r0, r2
     mov     r1, r6
     @ r0=JNIMethod, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r3}                @ restore r0-r3
 #endif
 
@@ -463,8 +463,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE:
 #if defined(TEMPLATE_INLINE_PROFILING)
     ldmfd   sp!, {r0-r1}                @ restore r2 and r6
     @ r0=JNIMethod, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastNativeMethodTraceExit
+    ldr     ip, .LdvmFastNativeMethodTraceExit
+    blx     ip
 #endif
     @ native return; r10=newSaveArea
     @ equivalent to dvmPopJniLocals
@@ -520,9 +520,8 @@ dvmCompiler_TEMPLATE_MUL_LONG:
     mul     ip, r2, r1                  @  ip<- ZxW
     umull   r9, r10, r2, r0             @  r9/r10 <- ZxX
     mla     r2, r0, r3, ip              @  r2<- YxX + (ZxW)
-    add     r10, r2, r10                @  r10<- r10 + low(ZxW + (YxX))
-    mov     r0,r9
-    mov     r1,r10
+    mov     r0, r9
+    add     r1, r2, r10                 @  r1<- r10 + low(ZxW + (YxX))
     bx      lr
 
 /* ------------------------------ */
@@ -1265,22 +1264,23 @@ dvmCompiler_TEMPLATE_STRING_INDEXOF:
      *    r2:   Starting offset in string data
      */
 
+    ldr    r3, [r0, #STRING_FIELDOFF_VALUE]
     ldr    r7, [r0, #STRING_FIELDOFF_OFFSET]
     ldr    r8, [r0, #STRING_FIELDOFF_COUNT]
-    ldr    r0, [r0, #STRING_FIELDOFF_VALUE]
+
 
     /*
      * At this point, we have:
-     *    r0: object pointer
      *    r1: char to match
      *    r2: starting offset
+     *    r3: object pointer (final result -> r0)
      *    r7: offset
      *    r8: string length
      */
 
      /* Build pointer to start of string data */
-     add   r0, #16
-     add   r0, r0, r7, lsl #1
+     add   r3, #16
+     add   r0, r3, r7, lsl #1
 
      /* Save a copy of starting data in r7 */
      mov   r7, r0
@@ -1508,20 +1508,20 @@ dvmCompiler_TEMPLATE_RETURN_PROF:
     stmfd   sp!, {r0-r2,lr}             @ preserve live registers
     mov     r0, r6
     @ r0=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceExit
+    ldr     ip, .LdvmFastMethodTraceExit
+    blx     ip
     ldmfd   sp!, {r0-r2,lr}             @ restore live registers
 #endif
     SAVEAREA_FROM_FP(r0, rFP)           @ r0<- saveArea (old)
     ldr     r10, [r0, #offStackSaveArea_prevFrame] @ r10<- saveArea->prevFrame
     ldrb    r8, [rSELF, #offThread_breakFlags] @ r8<- breakFlags
     ldr     rPC, [r0, #offStackSaveArea_savedPc] @ rPC<- saveArea->savedPc
+    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
 #if !defined(WITH_SELF_VERIFICATION)
     ldr     r9,  [r0, #offStackSaveArea_returnAddr] @ r9<- chaining cell ret
 #else
     mov     r9, #0                      @ disable chaining
 #endif
-    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
                                         @ r2<- method we're returning to
     cmp     r2, #0                      @ break frame?
 #if !defined(WITH_SELF_VERIFICATION)
@@ -1614,8 +1614,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NO_OPT_PROF:
     stmfd   sp!, {r0-r3}                    @ preserve r0-r3
     mov     r1, r6
     @ r0=methodToCall, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r3}                    @ restore r0-r3
 #endif
 
@@ -1623,7 +1623,7 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NO_OPT_PROF:
 #if defined(WITH_JIT_TUNING)
     mov     r0, #kInlineCacheMiss
 #endif
-    mov     pc, r10                         @ dvmJitToInterpTraceSelectNoChain
+    bx      r10                         @ dvmJitToInterpTraceSelectNoChain
 
 #undef TEMPLATE_INLINE_PROFILING
 
@@ -1676,8 +1676,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_CHAIN_PROF:
     stmfd   sp!, {r0-r2,lr}             @ preserve clobbered live registers
     mov     r1, r6
     @ r0=methodToCall, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r2,lr}             @ restore registers
 #endif
 
@@ -1807,8 +1807,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
     mov     r0, r2
     mov     r1, r6
     @ r0=JNIMethod, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r3}                @ restore r0-r3
 #endif
 
@@ -1817,8 +1817,8 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
 #if defined(TEMPLATE_INLINE_PROFILING)
     ldmfd   sp!, {r0-r1}                @ restore r2 and r6
     @ r0=JNIMethod, r1=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastNativeMethodTraceExit
+    ldr     ip, .LdvmFastNativeMethodTraceExit
+    blx     ip
 #endif
     @ native return; r10=newSaveArea
     @ equivalent to dvmPopJniLocals
@@ -1855,7 +1855,7 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
  * ===========================================================================
  */
 
-    .text
+    .section .data.rel.ro
     .align  2
 .LinvokeNative:
     @ Prep for the native call
@@ -1880,20 +1880,20 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
     stmfd   sp!, {r0-r3}
     mov     r0, r2
     mov     r1, r6
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceEnter
+    ldr     ip, .LdvmFastMethodTraceEnter
+    blx     ip
     ldmfd   sp!, {r0-r3}
 
-    mov     lr, pc
-    ldr     pc, [r2, #offMethod_nativeFunc]
+    ldr     ip, [r2, #offMethod_nativeFunc]
+    blx     ip
 
     ldmfd   sp!, {r0-r1}
-    mov     lr, pc
-    ldr     pc, .LdvmFastNativeMethodTraceExit
+    ldr     ip, .LdvmFastNativeMethodTraceExit
+    blx     ip
     b       212f
 121:
-    mov     lr, pc
-    ldr     pc, [r2, #offMethod_nativeFunc]
+    ldr     ip, [r2, #offMethod_nativeFunc]
+    blx     ip
 212:
 
     @ native return; r10=newSaveArea
@@ -1919,7 +1919,7 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
 #if defined(WITH_JIT_TUNING)
     mov     r0, #kCallsiteInterpreted
 #endif
-    mov     pc, r1
+    bx      r1
 
 /*
  * On entry:
@@ -1936,7 +1936,7 @@ dvmCompiler_TEMPLATE_INVOKE_METHOD_NATIVE_PROF:
     ldr     r1, .LdvmMterpCommonExceptionThrown @ PIC way of getting &func
     ldr     rIBASE, .LdvmAsmInstructionStart    @ same as above
     mov     rPC, r0                 @ reload the faulting Dalvik address
-    mov     pc, r1                  @ branch to dvmMterpCommonExceptionThrown
+    bx      r1                  @ branch to dvmMterpCommonExceptionThrown
 
     .align  2
 .LdvmAsmInstructionStart:

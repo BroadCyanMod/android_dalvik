@@ -46,14 +46,14 @@ static void* sysCreateAnonShmem(size_t length)
     ptr = mmap(NULL, length, PROT_READ | PROT_WRITE,
             MAP_SHARED | MAP_ANON, -1, 0);
     if (ptr == MAP_FAILED) {
-        LOGW("mmap(%d, RW, SHARED|ANON) failed: %s", (int) length,
+        ALOGW("mmap(%d, RW, SHARED|ANON) failed: %s", (int) length,
             strerror(errno));
         return NULL;
     }
 
     return ptr;
 #else
-    LOGE("sysCreateAnonShmem not implemented.");
+    ALOGE("sysCreateAnonShmem not implemented.");
     return NULL;
 #endif
 }
@@ -90,13 +90,13 @@ static int getFileStartAndLength(int fd, off_t *start_, size_t *length_)
     (void) lseek(fd, start, SEEK_SET);
 
     if (start == (off_t) -1 || end == (off_t) -1) {
-        LOGE("could not determine length of file");
+        ALOGE("could not determine length of file");
         return -1;
     }
 
     length = end - start;
     if (length == 0) {
-        LOGE("file is empty");
+        ALOGE("file is empty");
         return -1;
     }
 
@@ -104,46 +104,6 @@ static int getFileStartAndLength(int fd, off_t *start_, size_t *length_)
     *length_ = length;
 
     return 0;
-}
-
-/*
- * Pull the contents of a file into an new shared memory segment.  We grab
- * everything from fd's current offset on.
- *
- * We need to know the length ahead of time so we can allocate a segment
- * of sufficient size.
- */
-int sysLoadFileInShmem(int fd, MemMapping* pMap)
-{
-#ifdef HAVE_POSIX_FILEMAP
-    off_t start;
-    size_t length, actual;
-    void* memPtr;
-
-    assert(pMap != NULL);
-
-    if (getFileStartAndLength(fd, &start, &length) < 0)
-        return -1;
-
-    memPtr = sysCreateAnonShmem(length);
-    if (memPtr == NULL)
-        return -1;
-
-    actual = read(fd, memPtr, length);
-    if (actual != length) {
-        LOGE("only read %d of %d bytes", (int) actual, (int) length);
-        sysReleaseShmem(pMap);
-        return -1;
-    }
-
-    pMap->baseAddr = pMap->addr = memPtr;
-    pMap->baseLength = pMap->length = length;
-
-    return 0;
-#else
-    LOGE("sysLoadFileInShmem not implemented.");
-    return -1;
-#endif
 }
 
 #ifndef HAVE_POSIX_FILEMAP
@@ -164,7 +124,7 @@ int sysFakeMapFile(int fd, MemMapping* pMap)
 
     memPtr = malloc(length);
     if (read(fd, memPtr, length) < 0) {
-        LOGW("read(fd=%d, start=%d, length=%d) failed: %s", (int) length,
+        ALOGW("read(fd=%d, start=%d, length=%d) failed: %s", (int) length,
             fd, (int) start, strerror(errno));
         return -1;
     }
@@ -175,41 +135,6 @@ int sysFakeMapFile(int fd, MemMapping* pMap)
     return 0;
 }
 #endif
-
-/*
- * Map a file (from fd's current offset) into a shared, read-only memory
- * segment.  The file offset must be a multiple of the system page size.
- *
- * On success, returns 0 and fills out "pMap".  On failure, returns a nonzero
- * value and does not disturb "pMap".
- */
-int sysMapFileInShmemReadOnly(int fd, MemMapping* pMap)
-{
-#ifdef HAVE_POSIX_FILEMAP
-    off_t start;
-    size_t length;
-    void* memPtr;
-
-    assert(pMap != NULL);
-
-    if (getFileStartAndLength(fd, &start, &length) < 0)
-        return -1;
-
-    memPtr = mmap(NULL, length, PROT_READ, MAP_FILE | MAP_SHARED, fd, start);
-    if (memPtr == MAP_FAILED) {
-        LOGW("mmap(%d, RO, FILE|SHARED, %d, %d) failed: %s", (int) length,
-            fd, (int) start, strerror(errno));
-        return -1;
-    }
-
-    pMap->baseAddr = pMap->addr = memPtr;
-    pMap->baseLength = pMap->length = length;
-
-    return 0;
-#else
-    return sysFakeMapFile(fd, pMap);
-#endif
-}
 
 /*
  * Map a file (from fd's current offset) into a private, read-write memory
@@ -237,16 +162,16 @@ int sysMapFileInShmemWritableReadOnly(int fd, MemMapping* pMap)
     memPtr = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_FILE | MAP_PRIVATE,
             fd, start);
     if (memPtr == MAP_FAILED) {
-        LOGW("mmap(%d, R/W, FILE|PRIVATE, %d, %d) failed: %s", (int) length,
+        ALOGW("mmap(%d, R/W, FILE|PRIVATE, %d, %d) failed: %s", (int) length,
             fd, (int) start, strerror(errno));
         return -1;
     }
     if (mprotect(memPtr, length, PROT_READ) < 0) {
         /* this fails with EACCESS on FAT filesystems, e.g. /sdcard */
         int err = errno;
-        LOGV("mprotect(%p, %d, PROT_READ) failed: %s",
+        ALOGV("mprotect(%p, %d, PROT_READ) failed: %s",
             memPtr, length, strerror(err));
-        LOGD("mprotect(RO) failed (%d), file will remain read-write", err);
+        ALOGD("mprotect(RO) failed (%d), file will remain read-write", err);
     }
 
     pMap->baseAddr = pMap->addr = memPtr;
@@ -284,7 +209,7 @@ int sysMapFileSegmentInShmem(int fd, off_t start, size_t length,
     memPtr = mmap(NULL, actualLength, PROT_READ, MAP_FILE | MAP_SHARED,
                 fd, actualStart);
     if (memPtr == MAP_FAILED) {
-        LOGW("mmap(%d, R, FILE|SHARED, %d, %d) failed: %s",
+        ALOGW("mmap(%d, R, FILE|SHARED, %d, %d) failed: %s",
             (int) actualLength, fd, (int) actualStart, strerror(errno));
         return -1;
     }
@@ -301,7 +226,7 @@ int sysMapFileSegmentInShmem(int fd, off_t start, size_t length,
 
     return 0;
 #else
-    LOGE("sysMapFileSegmentInShmem not implemented.");
+    ALOGE("sysMapFileSegmentInShmem not implemented.");
     return -1;
 #endif
 }
@@ -321,7 +246,7 @@ int sysChangeMapAccess(void* addr, size_t length, int wantReadWrite,
     if (addr < pMap->baseAddr ||
         (u1*)addr >= (u1*)pMap->baseAddr + pMap->baseLength)
     {
-        LOGE("Attempted to change %p; map is %p - %p",
+        ALOGE("Attempted to change %p; map is %p - %p",
             addr, pMap->baseAddr, (u1*)pMap->baseAddr + pMap->baseLength);
         return -1;
     }
@@ -331,14 +256,14 @@ int sysChangeMapAccess(void* addr, size_t length, int wantReadWrite,
      * (The address must be page-aligned, the length doesn't need to be,
      * but we do need to ensure we cover the same range.)
      */
-    u1* alignAddr = (u1*) ((int) addr & ~(SYSTEM_PAGE_SIZE-1));
+    u1* alignAddr = (u1*) ((uintptr_t) addr & ~(SYSTEM_PAGE_SIZE-1));
     size_t alignLength = length + ((u1*) addr - alignAddr);
 
-    //LOGI("%p/%zd --> %p/%zd", addr, length, alignAddr, alignLength);
+    //ALOGI("%p/%zd --> %p/%zd", addr, length, alignAddr, alignLength);
     int prot = wantReadWrite ? (PROT_READ|PROT_WRITE) : (PROT_READ);
     if (mprotect(alignAddr, alignLength, prot) != 0) {
         int err = errno;
-        LOGV("mprotect (%p,%zd,%d) failed: %s",
+        ALOGV("mprotect (%p,%zd,%d) failed: %s",
             alignAddr, alignLength, prot, strerror(errno));
         return (errno != 0) ? errno : -1;
     }
@@ -358,10 +283,10 @@ void sysReleaseShmem(MemMapping* pMap)
         return;
 
     if (munmap(pMap->baseAddr, pMap->baseLength) < 0) {
-        LOGW("munmap(%p, %d) failed: %s",
+        ALOGW("munmap(%p, %d) failed: %s",
             pMap->baseAddr, (int)pMap->baseLength, strerror(errno));
     } else {
-        LOGV("munmap(%p, %d) succeeded", pMap->baseAddr, pMap->baseLength);
+        ALOGV("munmap(%p, %d) succeeded", pMap->baseAddr, pMap->baseLength);
         pMap->baseAddr = NULL;
         pMap->baseLength = 0;
     }
@@ -394,10 +319,10 @@ int sysWriteFully(int fd, const void* buf, size_t count, const char* logMsg)
         ssize_t actual = TEMP_FAILURE_RETRY(write(fd, buf, count));
         if (actual < 0) {
             int err = errno;
-            LOGE("%s: write failed: %s", logMsg, strerror(err));
+            ALOGE("%s: write failed: %s", logMsg, strerror(err));
             return err;
         } else if (actual != (ssize_t) count) {
-            LOGD("%s: partial write (will retry): (%d of %zd)",
+            ALOGD("%s: partial write (will retry): (%d of %zd)",
                 logMsg, (int) actual, count);
             buf = (const void*) (((const u1*) buf) + actual);
         }
@@ -418,7 +343,7 @@ int sysCopyFileToFile(int outFd, int inFd, size_t count)
 
         ssize_t actual = TEMP_FAILURE_RETRY(read(inFd, buf, getSize));
         if (actual != (ssize_t) getSize) {
-            LOGW("sysCopyFileToFile: copy read failed (%d vs %zd)",
+            ALOGW("sysCopyFileToFile: copy read failed (%d vs %zd)",
                 (int) actual, getSize);
             return -1;
         }

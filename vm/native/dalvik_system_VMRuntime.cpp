@@ -56,19 +56,19 @@ static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapUtilization(
 }
 
 /*
- * native void nativeSetTargetHeapIdealFree()
+ * native void nativeSetTargetHeapMinFree()
  *
- * Sets the current IDEAL_FREE, represented as a number
- * for byte size.  Returns the old IDEAL_FREE.
+ * Sets the current MIN_FREE, represented as a number
+ * for byte size.  Returns the old MIN_FREE.
  *
  * Note that this is NOT static.
  */
-static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapIdealFree(
+static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapMinFree(
     const u4* args, JValue* pResult)
 {
-    dvmSetTargetHeapIdealFree(args[1]);
+    dvmSetTargetHeapMinFree(args[1]);
 
-    RETURN_INT(dvmGetTargetHeapIdealFree());
+    RETURN_INT(dvmGetTargetHeapMinFree());
 }
 
 /*
@@ -86,6 +86,7 @@ static void Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapConcurrentStart(
 
     RETURN_INT(dvmGetTargetHeapConcurrentStart());
 }
+
 /*
  * public native void startJitCompilation()
  *
@@ -225,7 +226,7 @@ static void Dalvik_dalvik_system_VMRuntime_setTargetSdkVersion(const u4* args,
     int targetSdkVersion = args[1];
     if (targetSdkVersion > 0 && targetSdkVersion <= 13 /* honeycomb-mr2 */) {
         // TODO: running with CheckJNI should override this and force you to obey the strictest rules.
-        LOGI("Turning on JNI app bug workarounds for target SDK version %i...", targetSdkVersion);
+        ALOGI("Turning on JNI app bug workarounds for target SDK version %i...", targetSdkVersion);
         gDvmJni.workAroundAppJniBugs = true;
     }
     RETURN_VOID();
@@ -248,8 +249,8 @@ const DalvikNativeMethod dvm_dalvik_system_VMRuntime[] = {
         Dalvik_dalvik_system_VMRuntime_getTargetHeapUtilization },
     { "nativeSetTargetHeapUtilization", "(F)V",
         Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapUtilization },
-    { "nativeSetTargetHeapIdealFree", "(I)I",
-        Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapIdealFree },
+    { "nativeSetTargetHeapMinFree", "(I)I",
+        Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapMinFree },
     { "nativeSetTargetHeapConcurrentStart", "(I)I",
         Dalvik_dalvik_system_VMRuntime_nativeSetTargetHeapConcurrentStart },
     { "newNonMovableArray", "(Ljava/lang/Class;I)Ljava/lang/Object;",

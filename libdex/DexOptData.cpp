@@ -30,7 +30,7 @@
  */
 static bool isValidPointer(const void* ptr, const void* start, const void* end)
 {
-    return (ptr >= start) && (ptr < end) && (((u4) ptr & 7) == 0);
+    return (ptr >= start) && (ptr < end) && (((uintptr_t) ptr & 7) == 0);
 }
 
 /* (documented in header file) */
@@ -61,13 +61,13 @@ bool dexParseOptData(const u1* data, size_t length, DexFile* pDexFile)
      * properly aligned. This test will catch both of these cases.
      */
     if (!isValidPointer(pOpt, pOptStart, pOptEnd)) {
-        LOGE("Bogus opt data start pointer");
+        ALOGE("Bogus opt data start pointer");
         return false;
     }
 
     /* Make sure that the opt data length is a whole number of words. */
     if ((optLength & 3) != 0) {
-        LOGE("Unaligned opt data area end");
+        ALOGE("Unaligned opt data area end");
         return false;
     }
 
@@ -76,14 +76,14 @@ bool dexParseOptData(const u1* data, size_t length, DexFile* pDexFile)
      * one chunk header.
      */
     if (optLength < 8) {
-        LOGE("Undersized opt data area (%u)", optLength);
+        ALOGE("Undersized opt data area (%u)", optLength);
         return false;
     }
 
     /* Process chunks until we see the end marker. */
     while (*pOpt != kDexChunkEnd) {
         if (!isValidPointer(pOpt + 2, pOptStart, pOptEnd)) {
-            LOGE("Bogus opt data content pointer at offset %u",
+            ALOGE("Bogus opt data content pointer at offset %u",
                     ((const u1*) pOpt) - data);
             return false;
         }
@@ -99,7 +99,7 @@ bool dexParseOptData(const u1* data, size_t length, DexFile* pDexFile)
         const u4* pNextOpt = pOpt + (roundedSize / sizeof(u4));
 
         if (!isValidPointer(pNextOpt, pOptStart, pOptEnd)) {
-            LOGE("Opt data area problem for chunk of size %u at offset %u",
+            ALOGE("Opt data area problem for chunk of size %u at offset %u",
                     size, ((const u1*) pOpt) - data);
             return false;
         }
@@ -109,11 +109,11 @@ bool dexParseOptData(const u1* data, size_t length, DexFile* pDexFile)
             pDexFile->pClassLookup = (const DexClassLookup*) pOptData;
             break;
         case kDexChunkRegisterMaps:
-            LOGV("+++ found register maps, size=%u", size);
+            ALOGV("+++ found register maps, size=%u", size);
             pDexFile->pRegisterMapPool = pOptData;
             break;
         default:
-            LOGI("Unknown chunk 0x%08x (%c%c%c%c), size=%d in opt data area",
+            ALOGI("Unknown chunk 0x%08x (%c%c%c%c), size=%d in opt data area",
                 *pOpt,
                 (char) ((*pOpt) >> 24), (char) ((*pOpt) >> 16),
                 (char) ((*pOpt) >> 8),  (char)  (*pOpt),

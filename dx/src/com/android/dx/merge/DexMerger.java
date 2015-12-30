@@ -406,6 +406,9 @@ public final class DexMerger {
             }
 
             @Override void updateIndex(int offset, IndexMap indexMap, int oldIndex, int newIndex) {
+                if (newIndex < 0 || newIndex > 0xffff) {
+                    throw new IllegalArgumentException("type ID not in [0, 0xffff]: " + newIndex);
+                }
                 indexMap.typeIds[oldIndex] = (short) newIndex;
             }
 
@@ -446,6 +449,9 @@ public final class DexMerger {
             }
 
             @Override void updateIndex(int offset, IndexMap indexMap, int oldIndex, int newIndex) {
+                if (newIndex < 0 || newIndex > 0xffff) {
+                    throw new IllegalArgumentException("proto ID not in [0, 0xffff]: " + newIndex);
+                }
                 indexMap.protoIds[oldIndex] = (short) newIndex;
             }
 
@@ -466,6 +472,9 @@ public final class DexMerger {
             }
 
             @Override void updateIndex(int offset, IndexMap indexMap, int oldIndex, int newIndex) {
+                if (newIndex < 0 || newIndex > 0xffff) {
+                    throw new IllegalArgumentException("field ID not in [0, 0xffff]: " + newIndex);
+                }
                 indexMap.fieldIds[oldIndex] = (short) newIndex;
             }
 
@@ -486,6 +495,9 @@ public final class DexMerger {
             }
 
             @Override void updateIndex(int offset, IndexMap indexMap, int oldIndex, int newIndex) {
+                if (newIndex < 0 || newIndex > 0xffff) {
+                    throw new IllegalArgumentException("method ID not in [0, 0xffff]: " + newIndex);
+                }
                 indexMap.methodIds[oldIndex] = (short) newIndex;
             }
 
@@ -594,6 +606,8 @@ public final class DexMerger {
         transformAnnotationSets(dexB, bIndexMap);
         transformAnnotationDirectories(dexA, aIndexMap);
         transformAnnotationDirectories(dexB, bIndexMap);
+        transformStaticValues(dexA, aIndexMap);
+        transformStaticValues(dexB, bIndexMap);
     }
 
     private void transformAnnotationSets(DexBuffer in, IndexMap indexMap) {
@@ -612,6 +626,16 @@ public final class DexMerger {
             DexBuffer.Section directoryIn = in.open(section.off);
             for (int i = 0; i < section.size; i++) {
                 transformAnnotationDirectory(in, directoryIn, indexMap);
+            }
+        }
+    }
+
+    private void transformStaticValues(DexBuffer in, IndexMap indexMap) {
+        TableOfContents.Section section = in.getTableOfContents().encodedArrays;
+        if (section.exists()) {
+            DexBuffer.Section staticValuesIn = in.open(section.off);
+            for (int i = 0; i < section.size; i++) {
+                transformStaticValues(staticValuesIn, indexMap);
             }
         }
     }
@@ -643,13 +667,7 @@ public final class DexMerger {
         }
 
         int staticValuesOff = classDef.getStaticValuesOffset();
-        if (staticValuesOff == 0) {
-            idsDefsOut.writeInt(0);
-        } else {
-            DexBuffer.Section staticValuesIn = in.open(staticValuesOff);
-            idsDefsOut.writeInt(encodedArrayOut.getPosition());
-            transformStaticValues(staticValuesIn, indexMap);
-        }
+        idsDefsOut.writeInt(indexMap.adjustStaticValues(staticValuesOff));
     }
 
     /**
@@ -784,11 +802,16 @@ public final class DexMerger {
         codeOut.writeUnsignedShort(code.getOutsSize());
 
         Code.Try[] tries = code.getTries();
+        Code.CatchHandler[] catchHandlers = code.getCatchHandlers();
         codeOut.writeUnsignedShort(tries.length);
 
-        // TODO: retain debug info
-        // code.getDebugInfoOffset();
-        codeOut.writeInt(0);
+        int debugInfoOffset = code.getDebugInfoOffset();
+        if (debugInfoOffset != 0) {
+            codeOut.writeInt(debugInfoOut.getPosition());
+            transformDebugInfoItem(in.open(debugInfoOffset), indexMap);
+        } else {
+            codeOut.writeInt(0);
+        }
 
         short[] instructions = code.getInstructions();
         InstructionTransformer transformer = (in == dexA)
@@ -802,15 +825,120 @@ public final class DexMerger {
             if (newInstructions.length % 2 == 1) {
                 codeOut.writeShort((short) 0); // padding
             }
-            for (Code.Try tryItem : tries) {
-                codeOut.writeInt(tryItem.getStartAddress());
-                codeOut.writeUnsignedShort(tryItem.getInstructionCount());
-                codeOut.writeUnsignedShort(tryItem.getHandlerOffset());
-            }
-            Code.CatchHandler[] catchHandlers = code.getCatchHandlers();
-            codeOut.writeUleb128(catchHandlers.length);
-            for (Code.CatchHandler catchHandler : catchHandlers) {
-                transformEncodedCatchHandler(catchHandler, indexMap);
+
+            /*
+             * We can't write the tries until we've written the catch handlers.
+             * Unfortunately they're in the opposite order in the dex file so we
+             * need to transform them out-of-order.
+             */
+            DexBuffer.Section triesSection = dexOut.open(codeOut.getPosition());
+            codeOut.skip(tries.length * SizeOf.TRY_ITEM);
+            int[] offsets = transformCatchHandlers(indexMap, catchHandlers);
+            transformTries(triesSection, tries, offsets);
+        }
+    }
+
+    /**
+     * Writes the catch handlers to {@code codeOut} and returns their indices.
+     */
+    private int[] transformCatchHandlers(IndexMap indexMap, Code.CatchHandler[] catchHandlers) {
+        int baseOffset = codeOut.getPosition();
+        codeOut.writeUleb128(catchHandlers.length);
+        int[] offsets = new int[catchHandlers.length];
+        for (int i = 0; i < catchHandlers.length; i++) {
+            offsets[i] = codeOut.getPosition() - baseOffset;
+            transformEncodedCatchHandler(catchHandlers[i], indexMap);
+        }
+        return offsets;
+    }
+
+    private void transformTries(DexBuffer.Section out, Code.Try[] tries,
+            int[] catchHandlerOffsets) {
+        for (Code.Try tryItem : tries) {
+            out.writeInt(tryItem.getStartAddress());
+            out.writeUnsignedShort(tryItem.getInstructionCount());
+            out.writeUnsignedShort(catchHandlerOffsets[tryItem.getCatchHandlerIndex()]);
+        }
+    }
+
+    private static final byte DBG_END_SEQUENCE = 0x00;
+    private static final byte DBG_ADVANCE_PC = 0x01;
+    private static final byte DBG_ADVANCE_LINE = 0x02;
+    private static final byte DBG_START_LOCAL = 0x03;
+    private static final byte DBG_START_LOCAL_EXTENDED = 0x04;
+    private static final byte DBG_END_LOCAL = 0x05;
+    private static final byte DBG_RESTART_LOCAL = 0x06;
+    private static final byte DBG_SET_PROLOGUE_END = 0x07;
+    private static final byte DBG_SET_EPILOGUE_BEGIN = 0x08;
+    private static final byte DBG_SET_FILE = 0x09;
+
+    private void transformDebugInfoItem(DexBuffer.Section in, IndexMap indexMap) {
+        contentsOut.debugInfos.size++;
+        int lineStart = in.readUleb128();
+        debugInfoOut.writeUleb128(lineStart);
+
+        int parametersSize = in.readUleb128();
+        debugInfoOut.writeUleb128(parametersSize);
+
+        for (int p = 0; p < parametersSize; p++) {
+            int parameterName = in.readUleb128p1();
+            debugInfoOut.writeUleb128p1(indexMap.adjustString(parameterName));
+        }
+
+        int addrDiff;    // uleb128   address delta.
+        int lineDiff;    // sleb128   line delta.
+        int registerNum; // uleb128   register number.
+        int nameIndex;   // uleb128p1 string index.    Needs indexMap adjustment.
+        int typeIndex;   // uleb128p1 type index.      Needs indexMap adjustment.
+        int sigIndex;    // uleb128p1 string index.    Needs indexMap adjustment.
+
+        while (true) {
+            int opcode = in.readByte();
+            debugInfoOut.writeByte(opcode);
+
+            switch (opcode) {
+            case DBG_END_SEQUENCE:
+                return;
+
+            case DBG_ADVANCE_PC:
+                addrDiff = in.readUleb128();
+                debugInfoOut.writeUleb128(addrDiff);
+                break;
+
+            case DBG_ADVANCE_LINE:
+                lineDiff = in.readSleb128();
+                debugInfoOut.writeSleb128(lineDiff);
+                break;
+
+            case DBG_START_LOCAL:
+            case DBG_START_LOCAL_EXTENDED:
+                registerNum = in.readUleb128();
+                debugInfoOut.writeUleb128(registerNum);
+                nameIndex = in.readUleb128p1();
+                debugInfoOut.writeUleb128p1(indexMap.adjustString(nameIndex));
+                typeIndex = in.readUleb128p1();
+                debugInfoOut.writeUleb128p1(indexMap.adjustType(typeIndex));
+                if (opcode == DBG_START_LOCAL_EXTENDED) {
+                    sigIndex = in.readUleb128p1();
+                    debugInfoOut.writeUleb128p1(indexMap.adjustString(sigIndex));
+                }
+                break;
+
+            case DBG_END_LOCAL:
+            case DBG_RESTART_LOCAL:
+                registerNum = in.readUleb128();
+                debugInfoOut.writeUleb128(registerNum);
+                break;
+
+            case DBG_SET_FILE:
+                nameIndex = in.readUleb128p1();
+                debugInfoOut.writeUleb128p1(indexMap.adjustString(nameIndex));
+                break;
+
+            case DBG_SET_PROLOGUE_END:
+            case DBG_SET_EPILOGUE_BEGIN:
+            default:
+                break;
             }
         }
     }
@@ -838,6 +966,7 @@ public final class DexMerger {
 
     private void transformStaticValues(DexBuffer.Section in, IndexMap indexMap) {
         contentsOut.encodedArrays.size++;
+        indexMap.putStaticValuesOffset(in.getPosition(), encodedArrayOut.getPosition());
         indexMap.adjustEncodedArray(in.readEncodedArray()).writeTo(encodedArrayOut);
     }
 
@@ -901,7 +1030,6 @@ public final class DexMerger {
             mapList = SizeOf.UINT + (contents.sections.length * SizeOf.MAP_ITEM);
             typeList += contents.typeLists.byteCount;
             stringData += contents.stringDatas.byteCount;
-            debugInfo += contents.debugInfos.byteCount;
             annotationsDirectory += contents.annotationsDirectories.byteCount;
             annotationsSet += contents.annotationSets.byteCount;
             annotationsSetRefList += contents.annotationSetRefLists.byteCount;
@@ -911,6 +1039,7 @@ public final class DexMerger {
                 classData += contents.classDatas.byteCount;
                 encodedArray += contents.encodedArrays.byteCount;
                 annotation += contents.annotations.byteCount;
+                debugInfo += contents.debugInfos.byteCount;
             } else {
                 // at most 1/4 of the bytes in a code section are uleb/sleb
                 code += (int) Math.ceil(contents.codes.byteCount * 1.25);
@@ -918,9 +1047,14 @@ public final class DexMerger {
                 classData += (int) Math.ceil(contents.classDatas.byteCount * 1.34);
                 // all of the bytes in an encoding arrays section may be uleb/sleb
                 encodedArray += contents.encodedArrays.byteCount * 2;
-                // at most 1/3 of the bytes in an encoding arrays section are uleb/sleb
-                annotation += (int) Math.ceil(contents.annotations.byteCount * 1.34);
+                // all of the bytes in an annotations section may be uleb/sleb
+                annotation += (int) Math.ceil(contents.annotations.byteCount * 2);
+                // all of the bytes in a debug info section may be uleb/sleb
+                debugInfo += contents.debugInfos.byteCount * 2;
             }
+
+            typeList = DexBuffer.fourByteAlign(typeList);
+            code = DexBuffer.fourByteAlign(code);
         }
 
         public int size() {

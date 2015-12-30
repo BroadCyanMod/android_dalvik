@@ -398,149 +398,6 @@ static void genIPut(CompilationUnit *cUnit, MIR *mir, OpSize size,
     }
 }
 
-
-/*
- * Generate array load
- */
-static void genArrayGet(CompilationUnit *cUnit, MIR *mir, OpSize size,
-                        RegLocation rlArray, RegLocation rlIndex,
-                        RegLocation rlDest, int scale)
-{
-    RegisterClass regClass = dvmCompilerRegClassBySize(size);
-    int lenOffset = OFFSETOF_MEMBER(ArrayObject, length);
-    int dataOffset = OFFSETOF_MEMBER(ArrayObject, contents);
-    RegLocation rlResult;
-    rlArray = loadValue(cUnit, rlArray, kCoreReg);
-    rlIndex = loadValue(cUnit, rlIndex, kCoreReg);
-    int regPtr;
-
-    /* null object? */
-    ArmLIR * pcrLabel = NULL;
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_NULL_CHECK)) {
-        pcrLabel = genNullCheck(cUnit, rlArray.sRegLow,
-                                rlArray.lowReg, mir->offset, NULL);
-    }
-
-    regPtr = dvmCompilerAllocTemp(cUnit);
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_RANGE_CHECK)) {
-        int regLen = dvmCompilerAllocTemp(cUnit);
-        /* Get len */
-        loadWordDisp(cUnit, rlArray.lowReg, lenOffset, regLen);
-        /* regPtr -> array data */
-        opRegRegImm(cUnit, kOpAdd, regPtr, rlArray.lowReg, dataOffset);
-        genBoundsCheck(cUnit, rlIndex.lowReg, regLen, mir->offset,
-                       pcrLabel);
-        dvmCompilerFreeTemp(cUnit, regLen);
-    } else {
-        /* regPtr -> array data */
-        opRegRegImm(cUnit, kOpAdd, regPtr, rlArray.lowReg, dataOffset);
-    }
-    if ((size == kLong) || (size == kDouble)) {
-        if (scale) {
-            int rNewIndex = dvmCompilerAllocTemp(cUnit);
-            opRegRegImm(cUnit, kOpLsl, rNewIndex, rlIndex.lowReg, scale);
-            opRegReg(cUnit, kOpAdd, regPtr, rNewIndex);
-            dvmCompilerFreeTemp(cUnit, rNewIndex);
-        } else {
-            opRegReg(cUnit, kOpAdd, regPtr, rlIndex.lowReg);
-        }
-        rlResult = dvmCompilerEvalLoc(cUnit, rlDest, regClass, true);
-
-        HEAP_ACCESS_SHADOW(true);
-        loadPair(cUnit, regPtr, rlResult.lowReg, rlResult.highReg);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, regPtr);
-        storeValueWide(cUnit, rlDest, rlResult);
-    } else {
-        rlResult = dvmCompilerEvalLoc(cUnit, rlDest, regClass, true);
-
-        HEAP_ACCESS_SHADOW(true);
-        loadBaseIndexed(cUnit, regPtr, rlIndex.lowReg, rlResult.lowReg,
-                        scale, size);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, regPtr);
-        storeValue(cUnit, rlDest, rlResult);
-    }
-}
-
-/*
- * Generate array store
- *
- */
-static void genArrayPut(CompilationUnit *cUnit, MIR *mir, OpSize size,
-                        RegLocation rlArray, RegLocation rlIndex,
-                        RegLocation rlSrc, int scale)
-{
-    RegisterClass regClass = dvmCompilerRegClassBySize(size);
-    int lenOffset = OFFSETOF_MEMBER(ArrayObject, length);
-    int dataOffset = OFFSETOF_MEMBER(ArrayObject, contents);
-
-    int regPtr;
-    rlArray = loadValue(cUnit, rlArray, kCoreReg);
-    rlIndex = loadValue(cUnit, rlIndex, kCoreReg);
-
-    if (dvmCompilerIsTemp(cUnit, rlArray.lowReg)) {
-        dvmCompilerClobber(cUnit, rlArray.lowReg);
-        regPtr = rlArray.lowReg;
-    } else {
-        regPtr = dvmCompilerAllocTemp(cUnit);
-        genRegCopy(cUnit, regPtr, rlArray.lowReg);
-    }
-
-    /* null object? */
-    ArmLIR * pcrLabel = NULL;
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_NULL_CHECK)) {
-        pcrLabel = genNullCheck(cUnit, rlArray.sRegLow, rlArray.lowReg,
-                                mir->offset, NULL);
-    }
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_RANGE_CHECK)) {
-        int regLen = dvmCompilerAllocTemp(cUnit);
-        //NOTE: max live temps(4) here.
-        /* Get len */
-        loadWordDisp(cUnit, rlArray.lowReg, lenOffset, regLen);
-        /* regPtr -> array data */
-        opRegImm(cUnit, kOpAdd, regPtr, dataOffset);
-        genBoundsCheck(cUnit, rlIndex.lowReg, regLen, mir->offset,
-                       pcrLabel);
-        dvmCompilerFreeTemp(cUnit, regLen);
-    } else {
-        /* regPtr -> array data */
-        opRegImm(cUnit, kOpAdd, regPtr, dataOffset);
-    }
-    /* at this point, regPtr points to array, 2 live temps */
-    if ((size == kLong) || (size == kDouble)) {
-        //TODO: need specific wide routine that can handle fp regs
-        if (scale) {
-            int rNewIndex = dvmCompilerAllocTemp(cUnit);
-            opRegRegImm(cUnit, kOpLsl, rNewIndex, rlIndex.lowReg, scale);
-            opRegReg(cUnit, kOpAdd, regPtr, rNewIndex);
-            dvmCompilerFreeTemp(cUnit, rNewIndex);
-        } else {
-            opRegReg(cUnit, kOpAdd, regPtr, rlIndex.lowReg);
-        }
-        rlSrc = loadValueWide(cUnit, rlSrc, regClass);
-
-        HEAP_ACCESS_SHADOW(true);
-        storePair(cUnit, regPtr, rlSrc.lowReg, rlSrc.highReg);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, regPtr);
-    } else {
-        rlSrc = loadValue(cUnit, rlSrc, regClass);
-
-        HEAP_ACCESS_SHADOW(true);
-        storeBaseIndexed(cUnit, regPtr, rlIndex.lowReg, rlSrc.lowReg,
-                         scale, size);
-        HEAP_ACCESS_SHADOW(false);
-    }
-}
-
 /*
  * Generate array object store
  * Must use explicit register allocation here because of
@@ -670,6 +527,7 @@ static bool genArithOpLong(CompilationUnit *cUnit, MIR *mir,
     OpKind firstOp = kOpBkpt;
     OpKind secondOp = kOpBkpt;
     bool callOut = false;
+    bool checkZero = false;
     void *callTgt;
     int retReg = r0;
 
@@ -700,6 +558,7 @@ static bool genArithOpLong(CompilationUnit *cUnit, MIR *mir,
         case OP_DIV_LONG_2ADDR:
             callOut = true;
             retReg = r0;
+            checkZero = true;
             callTgt = (void*)__aeabi_ldivmod;
             break;
         /* NOTE - result is in r2/r3 instead of r0/r1 */
@@ -708,6 +567,7 @@ static bool genArithOpLong(CompilationUnit *cUnit, MIR *mir,
             callOut = true;
             callTgt = (void*)__aeabi_ldivmod;
             retReg = r2;
+            checkZero = true;
             break;
         case OP_AND_LONG_2ADDR:
         case OP_AND_LONG:
@@ -738,7 +598,7 @@ static bool genArithOpLong(CompilationUnit *cUnit, MIR *mir,
             return false;
         }
         default:
-            LOGE("Invalid long arith op");
+            ALOGE("Invalid long arith op");
             dvmCompilerAbort(cUnit);
     }
     if (!callOut) {
@@ -746,9 +606,14 @@ static bool genArithOpLong(CompilationUnit *cUnit, MIR *mir,
     } else {
         // Adjust return regs in to handle case of rem returning r2/r3
         dvmCompilerFlushAllRegs(cUnit);   /* Send everything to home location */
+        loadValueDirectWideFixed(cUnit, rlSrc2, r2, r3);
         loadValueDirectWideFixed(cUnit, rlSrc1, r0, r1);
         LOAD_FUNC_ADDR(cUnit, r14lr, (int) callTgt);
-        loadValueDirectWideFixed(cUnit, rlSrc2, r2, r3);
+        if (checkZero) {
+            int tReg = r12; // Using fixed registers during call sequence
+            opRegRegReg(cUnit, kOpOr, tReg, r2, r3);
+            genRegImmCheck(cUnit, kArmCondEq, tReg, 0, mir->offset, NULL);
+        }
         opReg(cUnit, kOpBlx, r14lr);
         dvmCompilerClobberCallRegs(cUnit);
         if (retReg == r0)
@@ -840,7 +705,7 @@ static bool genArithOpInt(CompilationUnit *cUnit, MIR *mir,
             op = kOpLsr;
             break;
         default:
-            LOGE("Invalid word arith op: %#x(%d)",
+            ALOGE("Invalid word arith op: %#x(%d)",
                  mir->dalvikInsn.opcode, mir->dalvikInsn.opcode);
             dvmCompilerAbort(cUnit);
     }
@@ -1034,9 +899,6 @@ static void genProcessArgsRange(CompilationUnit *cUnit, MIR *mir,
     /*
      * Protect the loadMultiple instruction from being reordered with other
      * Dalvik stack accesses.
-     *
-     * This code is also shared by the invoke jumbo instructions, and this
-     * does not need to be done if the invoke jumbo has no arguments.
      */
     if (numArgs != 0) loadMultiple(cUnit, r4PC, regMask);
 
@@ -1480,7 +1342,7 @@ static bool handleFmt10x(CompilationUnit *cUnit, MIR *mir)
 {
     Opcode dalvikOpcode = mir->dalvikInsn.opcode;
     if ((dalvikOpcode >= OP_UNUSED_3E) && (dalvikOpcode <= OP_UNUSED_43)) {
-        LOGE("Codegen: got unused opcode %#x",dalvikOpcode);
+        ALOGE("Codegen: got unused opcode %#x",dalvikOpcode);
         return true;
     }
     switch (dalvikOpcode) {
@@ -1493,8 +1355,8 @@ static bool handleFmt10x(CompilationUnit *cUnit, MIR *mir)
         case OP_UNUSED_73:
         case OP_UNUSED_79:
         case OP_UNUSED_7A:
-        case OP_DISPATCH_FF:
-            LOGE("Codegen: got unused opcode %#x",dalvikOpcode);
+        case OP_UNUSED_FF:
+            ALOGE("Codegen: got unused opcode %#x",dalvikOpcode);
             return true;
         case OP_NOP:
             break;
@@ -1568,14 +1430,14 @@ static bool handleFmt21h(CompilationUnit *cUnit, MIR *mir)
     return false;
 }
 
-static bool handleFmt20bc_Fmt40sc(CompilationUnit *cUnit, MIR *mir)
+static bool handleFmt20bc(CompilationUnit *cUnit, MIR *mir)
 {
-    /* For OP_THROW_VERIFICATION_ERROR & OP_THROW_VERIFICATION_ERROR_JUMBO */
+    /* For OP_THROW_VERIFICATION_ERROR */
     genInterpSingleStep(cUnit, mir);
     return false;
 }
 
-static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
+static bool handleFmt21c_Fmt31c(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlResult;
     RegLocation rlDest;
@@ -1589,7 +1451,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (strPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null string");
+                ALOGE("Unexpected null string");
                 dvmAbort();
             }
 
@@ -1599,14 +1461,13 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
             storeValue(cUnit, rlDest, rlResult);
             break;
         }
-        case OP_CONST_CLASS:
-        case OP_CONST_CLASS_JUMBO: {
+        case OP_CONST_CLASS: {
             void *classPtr = (void*)
               (cUnit->method->clazz->pDvmDex->pResClasses[mir->dalvikInsn.vB]);
 
             if (classPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null class");
+                ALOGE("Unexpected null class");
                 dvmAbort();
             }
 
@@ -1618,20 +1479,12 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
         }
         case OP_SGET:
         case OP_SGET_VOLATILE:
-        case OP_SGET_VOLATILE_JUMBO:
-        case OP_SGET_JUMBO:
         case OP_SGET_OBJECT:
         case OP_SGET_OBJECT_VOLATILE:
-        case OP_SGET_OBJECT_VOLATILE_JUMBO:
-        case OP_SGET_OBJECT_JUMBO:
         case OP_SGET_BOOLEAN:
-        case OP_SGET_BOOLEAN_JUMBO:
         case OP_SGET_CHAR:
-        case OP_SGET_CHAR_JUMBO:
         case OP_SGET_BYTE:
-        case OP_SGET_BYTE_JUMBO:
-        case OP_SGET_SHORT:
-        case OP_SGET_SHORT_JUMBO: {
+        case OP_SGET_SHORT: {
             int valOffset = OFFSETOF_MEMBER(StaticField, value);
             int tReg = dvmCompilerAllocTemp(cUnit);
             bool isVolatile;
@@ -1642,7 +1495,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (fieldPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null static field");
+                ALOGE("Unexpected null static field");
                 dvmAbort();
             }
 
@@ -1657,9 +1510,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 #if ANDROID_SMP != 0
             Opcode opcode = mir->dalvikInsn.opcode;
             isVolatile = (opcode == OP_SGET_VOLATILE) ||
-                         (opcode == OP_SGET_VOLATILE_JUMBO) ||
-                         (opcode == OP_SGET_OBJECT_VOLATILE) ||
-                         (opcode == OP_SGET_OBJECT_VOLATILE_JUMBO);
+                         (opcode == OP_SGET_OBJECT_VOLATILE);
             assert(isVolatile == dvmIsVolatileField((Field *) fieldPtr));
 #else
             isVolatile = dvmIsVolatileField((Field *) fieldPtr);
@@ -1679,8 +1530,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
             storeValue(cUnit, rlDest, rlResult);
             break;
         }
-        case OP_SGET_WIDE:
-        case OP_SGET_WIDE_JUMBO: {
+        case OP_SGET_WIDE: {
             int valOffset = OFFSETOF_MEMBER(StaticField, value);
             const Method *method = (mir->OptimizationFlags & MIR_CALLEE) ?
                 mir->meta.calleeMethod : cUnit->method;
@@ -1689,7 +1539,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (fieldPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null static field");
+                ALOGE("Unexpected null static field");
                 dvmAbort();
             }
 
@@ -1707,20 +1557,12 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
         }
         case OP_SPUT:
         case OP_SPUT_VOLATILE:
-        case OP_SPUT_VOLATILE_JUMBO:
-        case OP_SPUT_JUMBO:
         case OP_SPUT_OBJECT:
         case OP_SPUT_OBJECT_VOLATILE:
-        case OP_SPUT_OBJECT_VOLATILE_JUMBO:
-        case OP_SPUT_OBJECT_JUMBO:
         case OP_SPUT_BOOLEAN:
-        case OP_SPUT_BOOLEAN_JUMBO:
         case OP_SPUT_CHAR:
-        case OP_SPUT_CHAR_JUMBO:
         case OP_SPUT_BYTE:
-        case OP_SPUT_BYTE_JUMBO:
-        case OP_SPUT_SHORT:
-        case OP_SPUT_SHORT_JUMBO: {
+        case OP_SPUT_SHORT: {
             int valOffset = OFFSETOF_MEMBER(StaticField, value);
             int tReg = dvmCompilerAllocTemp(cUnit);
             int objHead;
@@ -1734,24 +1576,20 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (fieldPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null static field");
+                ALOGE("Unexpected null static field");
                 dvmAbort();
             }
 
 #if ANDROID_SMP != 0
             isVolatile = (opcode == OP_SPUT_VOLATILE) ||
-                         (opcode == OP_SPUT_VOLATILE_JUMBO) ||
-                         (opcode == OP_SPUT_OBJECT_VOLATILE) ||
-                         (opcode == OP_SPUT_OBJECT_VOLATILE_JUMBO);
+                         (opcode == OP_SPUT_OBJECT_VOLATILE);
             assert(isVolatile == dvmIsVolatileField((Field *) fieldPtr));
 #else
             isVolatile = dvmIsVolatileField((Field *) fieldPtr);
 #endif
 
             isSputObject = (opcode == OP_SPUT_OBJECT) ||
-                           (opcode == OP_SPUT_OBJECT_JUMBO) ||
-                           (opcode == OP_SPUT_OBJECT_VOLATILE) ||
-                           (opcode == OP_SPUT_OBJECT_VOLATILE_JUMBO);
+                           (opcode == OP_SPUT_OBJECT_VOLATILE);
 
             rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
             rlSrc = loadValue(cUnit, rlSrc, kAnyReg);
@@ -1778,8 +1616,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             break;
         }
-        case OP_SPUT_WIDE:
-        case OP_SPUT_WIDE_JUMBO: {
+        case OP_SPUT_WIDE: {
             int tReg = dvmCompilerAllocTemp(cUnit);
             int valOffset = OFFSETOF_MEMBER(StaticField, value);
             const Method *method = (mir->OptimizationFlags & MIR_CALLEE) ?
@@ -1789,7 +1626,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (fieldPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null static field");
+                ALOGE("Unexpected null static field");
                 dvmAbort();
             }
 
@@ -1802,8 +1639,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
             HEAP_ACCESS_SHADOW(false);
             break;
         }
-        case OP_NEW_INSTANCE:
-        case OP_NEW_INSTANCE_JUMBO: {
+        case OP_NEW_INSTANCE: {
             /*
              * Obey the calling convention and don't mess with the register
              * usage.
@@ -1813,7 +1649,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 
             if (classPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null class");
+                ALOGE("Unexpected null class");
                 dvmAbort();
             }
 
@@ -1847,8 +1683,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
             storeValue(cUnit, rlDest, rlResult);
             break;
         }
-        case OP_CHECK_CAST:
-        case OP_CHECK_CAST_JUMBO: {
+        case OP_CHECK_CAST: {
             /*
              * Obey the calling convention and don't mess with the register
              * usage.
@@ -1903,9 +1738,7 @@ static bool handleFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
             break;
         }
         case OP_SGET_WIDE_VOLATILE:
-        case OP_SGET_WIDE_VOLATILE_JUMBO:
         case OP_SPUT_WIDE_VOLATILE:
-        case OP_SPUT_WIDE_VOLATILE_JUMBO:
             genInterpSingleStep(cUnit, mir);
             break;
         default:
@@ -2137,9 +1970,6 @@ static bool handleFmt21t(CompilationUnit *cUnit, MIR *mir, BasicBlock *bb,
     RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
     rlSrc = loadValue(cUnit, rlSrc, kCoreReg);
 
-    opRegImm(cUnit, kOpCmp, rlSrc.lowReg, 0);
-
-//TUNING: break this out to allow use of Thumb2 CB[N]Z
     switch (dalvikOpcode) {
         case OP_IF_EQZ:
             cond = kArmCondEq;
@@ -2161,10 +1991,11 @@ static bool handleFmt21t(CompilationUnit *cUnit, MIR *mir, BasicBlock *bb,
             break;
         default:
             cond = (ArmConditionCode)0;
-            LOGE("Unexpected opcode (%d) for Fmt21t", dalvikOpcode);
+            ALOGE("Unexpected opcode (%d) for Fmt21t", dalvikOpcode);
             dvmCompilerAbort(cUnit);
     }
-    genConditionalBranch(cUnit, cond, &labelList[bb->taken->id]);
+    ArmLIR* branch = genCmpImmBranch(cUnit, cond, rlSrc.lowReg, 0);
+    branch->generic.target = (LIR*)&labelList[bb->taken->id];
     /* This mostly likely will be optimized away in a later phase */
     genUnconditionalBranch(cUnit, &labelList[bb->fallThrough->id]);
     return false;
@@ -2287,10 +2118,7 @@ static bool handleEasyMultiply(CompilationUnit *cUnit,
     } else {
         // Reverse subtract: (src << (shift + 1)) - src.
         assert(powerOfTwoMinusOne);
-        // TODO: rsb dst, src, src lsl#lowestSetBit(lit + 1)
-        int tReg = dvmCompilerAllocTemp(cUnit);
-        opRegRegImm(cUnit, kOpLsl, tReg, rlSrc.lowReg, lowestSetBit(lit + 1));
-        opRegRegReg(cUnit, kOpSub, rlResult.lowReg, tReg, rlSrc.lowReg);
+        genMultiplyByShiftAndReverseSubtract(cUnit, rlSrc, rlResult, lowestSetBit(lit + 1));
     }
     storeValue(cUnit, rlDest, rlResult);
     return true;
@@ -2411,7 +2239,7 @@ static bool handleFmt22b_Fmt22s(CompilationUnit *cUnit, MIR *mir)
     return false;
 }
 
-static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
+static bool handleFmt22c(CompilationUnit *cUnit, MIR *mir)
 {
     Opcode dalvikOpcode = mir->dalvikInsn.opcode;
     int fieldOffset = -1;
@@ -2421,50 +2249,30 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
          * Wide volatiles currently handled via single step.
          * Add them here if generating in-line code.
          *     case OP_IGET_WIDE_VOLATILE:
-         *     case OP_IGET_WIDE_VOLATILE_JUMBO:
          *     case OP_IPUT_WIDE_VOLATILE:
-         *     case OP_IPUT_WIDE_VOLATILE_JUMBO:
          */
         case OP_IGET_VOLATILE:
-        case OP_IGET_VOLATILE_JUMBO:
         case OP_IGET_OBJECT_VOLATILE:
-        case OP_IGET_OBJECT_VOLATILE_JUMBO:
         case OP_IPUT_VOLATILE:
-        case OP_IPUT_VOLATILE_JUMBO:
         case OP_IPUT_OBJECT_VOLATILE:
-        case OP_IPUT_OBJECT_VOLATILE_JUMBO:
 #if ANDROID_SMP != 0
             isVolatile = true;
         // NOTE: intentional fallthrough
 #endif
         case OP_IGET:
-        case OP_IGET_JUMBO:
         case OP_IGET_WIDE:
-        case OP_IGET_WIDE_JUMBO:
         case OP_IGET_OBJECT:
-        case OP_IGET_OBJECT_JUMBO:
         case OP_IGET_BOOLEAN:
-        case OP_IGET_BOOLEAN_JUMBO:
         case OP_IGET_BYTE:
-        case OP_IGET_BYTE_JUMBO:
         case OP_IGET_CHAR:
-        case OP_IGET_CHAR_JUMBO:
         case OP_IGET_SHORT:
-        case OP_IGET_SHORT_JUMBO:
         case OP_IPUT:
-        case OP_IPUT_JUMBO:
         case OP_IPUT_WIDE:
-        case OP_IPUT_WIDE_JUMBO:
         case OP_IPUT_OBJECT:
-        case OP_IPUT_OBJECT_JUMBO:
         case OP_IPUT_BOOLEAN:
-        case OP_IPUT_BOOLEAN_JUMBO:
         case OP_IPUT_BYTE:
-        case OP_IPUT_BYTE_JUMBO:
         case OP_IPUT_CHAR:
-        case OP_IPUT_CHAR_JUMBO:
-        case OP_IPUT_SHORT:
-        case OP_IPUT_SHORT_JUMBO: {
+        case OP_IPUT_SHORT: {
             const Method *method = (mir->OptimizationFlags & MIR_CALLEE) ?
                 mir->meta.calleeMethod : cUnit->method;
             Field *fieldPtr =
@@ -2472,7 +2280,7 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
 
             if (fieldPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null instance field");
+                ALOGE("Unexpected null instance field");
                 dvmAbort();
             }
 
@@ -2489,8 +2297,7 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
     }
 
     switch (dalvikOpcode) {
-        case OP_NEW_ARRAY:
-        case OP_NEW_ARRAY_JUMBO: {
+        case OP_NEW_ARRAY: {
             // Generates a call - use explicit registers
             RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
             RegLocation rlDest = dvmCompilerGetDest(cUnit, mir, 0);
@@ -2500,7 +2307,7 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
 
             if (classPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGE("Unexpected null class");
+                ALOGE("Unexpected null class");
                 dvmAbort();
             }
 
@@ -2534,8 +2341,7 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
             storeValue(cUnit, rlDest, rlResult);
             break;
         }
-        case OP_INSTANCE_OF:
-        case OP_INSTANCE_OF_JUMBO: {
+        case OP_INSTANCE_OF: {
             // May generate a call - use explicit registers
             RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
             RegLocation rlDest = dvmCompilerGetDest(cUnit, mir, 0);
@@ -2552,7 +2358,7 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
              */
             if (classPtr == NULL) {
                 BAIL_LOOP_COMPILATION();
-                LOGD("null clazz in OP_INSTANCE_OF, single-stepping");
+                ALOGD("null clazz in OP_INSTANCE_OF, single-stepping");
                 genInterpSingleStep(cUnit, mir);
                 break;
             }
@@ -2582,55 +2388,35 @@ static bool handleFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
             break;
         }
         case OP_IGET_WIDE:
-        case OP_IGET_WIDE_JUMBO:
             genIGetWide(cUnit, mir, fieldOffset);
             break;
         case OP_IGET_VOLATILE:
-        case OP_IGET_VOLATILE_JUMBO:
         case OP_IGET_OBJECT_VOLATILE:
-        case OP_IGET_OBJECT_VOLATILE_JUMBO:
         case OP_IGET:
-        case OP_IGET_JUMBO:
         case OP_IGET_OBJECT:
-        case OP_IGET_OBJECT_JUMBO:
         case OP_IGET_BOOLEAN:
-        case OP_IGET_BOOLEAN_JUMBO:
         case OP_IGET_BYTE:
-        case OP_IGET_BYTE_JUMBO:
         case OP_IGET_CHAR:
-        case OP_IGET_CHAR_JUMBO:
         case OP_IGET_SHORT:
-        case OP_IGET_SHORT_JUMBO:
             genIGet(cUnit, mir, kWord, fieldOffset, isVolatile);
             break;
         case OP_IPUT_WIDE:
-        case OP_IPUT_WIDE_JUMBO:
             genIPutWide(cUnit, mir, fieldOffset);
             break;
         case OP_IPUT_VOLATILE:
-        case OP_IPUT_VOLATILE_JUMBO:
         case OP_IPUT:
-        case OP_IPUT_JUMBO:
         case OP_IPUT_BOOLEAN:
-        case OP_IPUT_BOOLEAN_JUMBO:
         case OP_IPUT_BYTE:
-        case OP_IPUT_BYTE_JUMBO:
         case OP_IPUT_CHAR:
-        case OP_IPUT_CHAR_JUMBO:
         case OP_IPUT_SHORT:
-        case OP_IPUT_SHORT_JUMBO:
             genIPut(cUnit, mir, kWord, fieldOffset, false, isVolatile);
             break;
         case OP_IPUT_OBJECT_VOLATILE:
-        case OP_IPUT_OBJECT_VOLATILE_JUMBO:
         case OP_IPUT_OBJECT:
-        case OP_IPUT_OBJECT_JUMBO:
             genIPut(cUnit, mir, kWord, fieldOffset, true, isVolatile);
             break;
         case OP_IGET_WIDE_VOLATILE:
-        case OP_IGET_WIDE_VOLATILE_JUMBO:
         case OP_IPUT_WIDE_VOLATILE:
-        case OP_IPUT_WIDE_VOLATILE_JUMBO:
             genInterpSingleStep(cUnit, mir);
             break;
         default:
@@ -2710,7 +2496,7 @@ static bool handleFmt22t(CompilationUnit *cUnit, MIR *mir, BasicBlock *bb,
             break;
         default:
             cond = (ArmConditionCode)0;
-            LOGE("Unexpected opcode (%d) for Fmt22t", dalvikOpcode);
+            ALOGE("Unexpected opcode (%d) for Fmt22t", dalvikOpcode);
             dvmCompilerAbort(cUnit);
     }
     genConditionalBranch(cUnit, cond, &labelList[bb->taken->id]);
@@ -2859,16 +2645,16 @@ static bool handleFmt23x(CompilationUnit *cUnit, MIR *mir)
  * chaining cell for case default [8 bytes]
  * noChain exit
  */
-static s8 findPackedSwitchIndex(const u2* switchData, int testVal, int pc)
+static u8 findPackedSwitchIndex(const u2* switchData, int testVal, uintptr_t pc)
 {
     int size;
     int firstKey;
     const int *entries;
     int index;
     int jumpIndex;
-    int caseDPCOffset = 0;
+    uintptr_t caseDPCOffset = 0;
     /* In Thumb mode pc is 4 ahead of the "mov r2, pc" instruction */
-    int chainingPC = (pc + 4) & ~3;
+    uintptr_t chainingPC = (pc + 4) & ~3;
 
     /*
      * Packed switch data format:
@@ -2907,16 +2693,16 @@ static s8 findPackedSwitchIndex(const u2* switchData, int testVal, int pc)
     }
 
     chainingPC += jumpIndex * CHAIN_CELL_NORMAL_SIZE;
-    return (((s8) caseDPCOffset) << 32) | (u8) chainingPC;
+    return (((u8) caseDPCOffset) << 32) | (u8) chainingPC;
 }
 
 /* See comments for findPackedSwitchIndex */
-static s8 findSparseSwitchIndex(const u2* switchData, int testVal, int pc)
+static u8 findSparseSwitchIndex(const u2* switchData, int testVal, uintptr_t pc)
 {
     int size;
     const int *keys;
     const int *entries;
-    int chainingPC = (pc + 4) & ~3;
+    uintptr_t chainingPC = (pc + 4) & ~3;
     int i;
 
     /*
@@ -2958,7 +2744,7 @@ static s8 findSparseSwitchIndex(const u2* switchData, int testVal, int pc)
             int jumpIndex = (i < MAX_CHAINED_SWITCH_CASES) ?
                            i : MAX_CHAINED_SWITCH_CASES + 1;
             chainingPC += jumpIndex * CHAIN_CELL_NORMAL_SIZE;
-            return (((s8) entries[i]) << 32) | (u8) chainingPC;
+            return (((u8) entries[i]) << 32) | (u8) chainingPC;
         } else if (k > testVal) {
             break;
         }
@@ -3056,7 +2842,7 @@ static void genLandingPadForMispredictedCallee(CompilationUnit *cUnit, MIR *mir,
     mir->meta.callsiteInfo->misPredBranchOver->target = (LIR *) target;
 }
 
-static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
+static bool handleFmt35c_3rc(CompilationUnit *cUnit, MIR *mir,
                              BasicBlock *bb, ArmLIR *labelList)
 {
     ArmLIR *retChainingCell = NULL;
@@ -3077,8 +2863,7 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
          * ]
          */
         case OP_INVOKE_VIRTUAL:
-        case OP_INVOKE_VIRTUAL_RANGE:
-        case OP_INVOKE_VIRTUAL_JUMBO: {
+        case OP_INVOKE_VIRTUAL_RANGE: {
             ArmLIR *predChainingCell = &labelList[bb->taken->id];
             int methodIndex =
                 cUnit->method->clazz->pDvmDex->pResMethods[dInsn->vB]->
@@ -3109,8 +2894,7 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
          *                ->pResMethods[BBBB]->methodIndex]
          */
         case OP_INVOKE_SUPER:
-        case OP_INVOKE_SUPER_RANGE:
-        case OP_INVOKE_SUPER_JUMBO: {
+        case OP_INVOKE_SUPER_RANGE: {
             /* Grab the method ptr directly from what the interpreter sees */
             const Method *calleeMethod = mir->meta.callsiteInfo->method;
             assert(calleeMethod == cUnit->method->clazz->super->vtable[
@@ -3139,8 +2923,7 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
         }
         /* calleeMethod = method->clazz->pDvmDex->pResMethods[BBBB] */
         case OP_INVOKE_DIRECT:
-        case OP_INVOKE_DIRECT_RANGE:
-        case OP_INVOKE_DIRECT_JUMBO: {
+        case OP_INVOKE_DIRECT_RANGE: {
             /* Grab the method ptr directly from what the interpreter sees */
             const Method *calleeMethod = mir->meta.callsiteInfo->method;
             assert(calleeMethod ==
@@ -3160,8 +2943,7 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
         }
         /* calleeMethod = method->clazz->pDvmDex->pResMethods[BBBB] */
         case OP_INVOKE_STATIC:
-        case OP_INVOKE_STATIC_RANGE:
-        case OP_INVOKE_STATIC_JUMBO: {
+        case OP_INVOKE_STATIC_RANGE: {
             /* Grab the method ptr directly from what the interpreter sees */
             const Method *calleeMethod = mir->meta.callsiteInfo->method;
             assert(calleeMethod ==
@@ -3261,8 +3043,7 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
          * 0x47357ebc : .word (0x425719dc)
          */
         case OP_INVOKE_INTERFACE:
-        case OP_INVOKE_INTERFACE_RANGE:
-        case OP_INVOKE_INTERFACE_JUMBO: {
+        case OP_INVOKE_INTERFACE_RANGE: {
             ArmLIR *predChainingCell = &labelList[bb->taken->id];
 
             /*
@@ -3410,11 +3191,9 @@ static bool handleFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
             genTrap(cUnit, mir->offset, pcrLabel);
             break;
         }
-        case OP_INVOKE_OBJECT_INIT_JUMBO:
         case OP_INVOKE_OBJECT_INIT_RANGE:
         case OP_FILLED_NEW_ARRAY:
-        case OP_FILLED_NEW_ARRAY_RANGE:
-        case OP_FILLED_NEW_ARRAY_JUMBO: {
+        case OP_FILLED_NEW_ARRAY_RANGE: {
             /* Just let the interpreter deal with these */
             genInterpSingleStep(cUnit, mir);
             break;
@@ -3722,30 +3501,40 @@ static bool handleExecuteInline(CompilationUnit *cUnit, MIR *mir)
             return false;  /* Nop */
 
         /* These ones we potentially JIT inline. */
+
+        case INLINE_STRING_CHARAT:
+            return genInlinedStringCharAt(cUnit, mir);
         case INLINE_STRING_LENGTH:
             return genInlinedStringLength(cUnit, mir);
         case INLINE_STRING_IS_EMPTY:
             return genInlinedStringIsEmpty(cUnit, mir);
-        case INLINE_MATH_ABS_INT:
-            return genInlinedAbsInt(cUnit, mir);
-        case INLINE_MATH_ABS_LONG:
-            return genInlinedAbsLong(cUnit, mir);
-        case INLINE_MATH_MIN_INT:
-            return genInlinedMinMaxInt(cUnit, mir, true);
-        case INLINE_MATH_MAX_INT:
-            return genInlinedMinMaxInt(cUnit, mir, false);
-        case INLINE_STRING_CHARAT:
-            return genInlinedStringCharAt(cUnit, mir);
-        case INLINE_MATH_SQRT:
-            return genInlineSqrt(cUnit, mir);
-        case INLINE_MATH_ABS_FLOAT:
-            return genInlinedAbsFloat(cUnit, mir);
-        case INLINE_MATH_ABS_DOUBLE:
-            return genInlinedAbsDouble(cUnit, mir);
         case INLINE_STRING_COMPARETO:
             return genInlinedCompareTo(cUnit, mir);
         case INLINE_STRING_FASTINDEXOF_II:
             return genInlinedFastIndexOf(cUnit, mir);
+
+        case INLINE_MATH_ABS_INT:
+        case INLINE_STRICT_MATH_ABS_INT:
+            return genInlinedAbsInt(cUnit, mir);
+        case INLINE_MATH_ABS_LONG:
+        case INLINE_STRICT_MATH_ABS_LONG:
+            return genInlinedAbsLong(cUnit, mir);
+        case INLINE_MATH_MIN_INT:
+        case INLINE_STRICT_MATH_MIN_INT:
+            return genInlinedMinMaxInt(cUnit, mir, true);
+        case INLINE_MATH_MAX_INT:
+        case INLINE_STRICT_MATH_MAX_INT:
+            return genInlinedMinMaxInt(cUnit, mir, false);
+        case INLINE_MATH_SQRT:
+        case INLINE_STRICT_MATH_SQRT:
+            return genInlineSqrt(cUnit, mir);
+        case INLINE_MATH_ABS_FLOAT:
+        case INLINE_STRICT_MATH_ABS_FLOAT:
+            return genInlinedAbsFloat(cUnit, mir);
+        case INLINE_MATH_ABS_DOUBLE:
+        case INLINE_STRICT_MATH_ABS_DOUBLE:
+            return genInlinedAbsDouble(cUnit, mir);
+
         case INLINE_FLOAT_TO_RAW_INT_BITS:
         case INLINE_INT_BITS_TO_FLOAT:
             return genInlinedIntFloatConversion(cUnit, mir);
@@ -3910,7 +3699,7 @@ static void handlePCReconstruction(CompilationUnit *cUnit,
      * We should never reach here through fall-through code, so insert
      * a bomb to signal troubles immediately.
      */
-    if (numElems) {
+    if ((numElems) || (cUnit->jitMode == kJitLoop)) {
         newLIR0(cUnit, kThumbUndefined);
     }
 
@@ -4235,11 +4024,8 @@ static bool selfVerificationPuntOps(MIR *mir)
         case OP_MONITOR_ENTER:
         case OP_MONITOR_EXIT:
         case OP_NEW_INSTANCE:
-        case OP_NEW_INSTANCE_JUMBO:
         case OP_NEW_ARRAY:
-        case OP_NEW_ARRAY_JUMBO:
         case OP_CHECK_CAST:
-        case OP_CHECK_CAST_JUMBO:
         case OP_MOVE_EXCEPTION:
         case OP_FILL_ARRAY_DATA:
         case OP_EXECUTE_INLINE:
@@ -4490,13 +4276,11 @@ void dvmCompilerMIR2LIR(CompilationUnit *cUnit)
                             notHandled = handleFmt12x(cUnit, mir);
                             break;
                         case kFmt20bc:
-                        case kFmt40sc:
-                            notHandled = handleFmt20bc_Fmt40sc(cUnit, mir);
+                            notHandled = handleFmt20bc(cUnit, mir);
                             break;
                         case kFmt21c:
                         case kFmt31c:
-                        case kFmt41c:
-                            notHandled = handleFmt21c_Fmt31c_Fmt41c(cUnit, mir);
+                            notHandled = handleFmt21c_Fmt31c(cUnit, mir);
                             break;
                         case kFmt21h:
                             notHandled = handleFmt21h(cUnit, mir);
@@ -4513,8 +4297,7 @@ void dvmCompilerMIR2LIR(CompilationUnit *cUnit)
                             notHandled = handleFmt22b_Fmt22s(cUnit, mir);
                             break;
                         case kFmt22c:
-                        case kFmt52c:
-                            notHandled = handleFmt22c_Fmt52c(cUnit, mir);
+                            notHandled = handleFmt22c(cUnit, mir);
                             break;
                         case kFmt22cs:
                             notHandled = handleFmt22cs(cUnit, mir);
@@ -4535,8 +4318,7 @@ void dvmCompilerMIR2LIR(CompilationUnit *cUnit)
                             break;
                         case kFmt3rc:
                         case kFmt35c:
-                        case kFmt5rc:
-                            notHandled = handleFmt35c_3rc_5rc(cUnit, mir, bb,
+                            notHandled = handleFmt35c_3rc(cUnit, mir, bb,
                                                           labelList);
                             break;
                         case kFmt3rms:
@@ -4557,7 +4339,7 @@ void dvmCompilerMIR2LIR(CompilationUnit *cUnit)
                     }
                 }
                 if (notHandled) {
-                    LOGE("%#06x: Opcode %#x (%s) / Fmt %d not handled",
+                    ALOGE("%#06x: Opcode %#x (%s) / Fmt %d not handled",
                          mir->offset,
                          dalvikOpcode, dexGetOpcodeName(dalvikOpcode),
                          dalvikFormat);
@@ -4572,6 +4354,7 @@ void dvmCompilerMIR2LIR(CompilationUnit *cUnit)
                                  (LIR *) cUnit->loopAnalysis->branchToBody);
             dvmCompilerAppendLIR(cUnit,
                                  (LIR *) cUnit->loopAnalysis->branchToPCR);
+            cUnit->loopAnalysis->branchesAdded = true;
         }
 
         if (headLIR) {
@@ -4641,7 +4424,7 @@ gen_fallthrough:
                         chainingBlock->startOffset);
                     break;
                 default:
-                    LOGE("Bad blocktype %d", chainingBlock->blockType);
+                    ALOGE("Bad blocktype %d", chainingBlock->blockType);
                     dvmCompilerAbort(cUnit);
             }
         }
@@ -4712,7 +4495,7 @@ bool dvmCompilerDoWork(CompilerWorkOrder *work)
             break;
         default:
             isCompile = false;
-            LOGE("Jit: unknown work order type");
+            ALOGE("Jit: unknown work order type");
             assert(0);  // Bail if debug build, discard otherwise
     }
     if (!success)
@@ -4762,7 +4545,7 @@ void dvmCompilerArchDump(void)
         }
     }
     if (strlen(buf)) {
-        LOGD("dalvik.vm.jit.op = %s", buf);
+        ALOGD("dalvik.vm.jit.op = %s", buf);
     }
 }
 
@@ -4773,7 +4556,7 @@ bool dvmCompilerArchInit()
 
     for (i = 0; i < kArmLast; i++) {
         if (EncodingMap[i].opcode != i) {
-            LOGE("Encoding order for %s is wrong: expecting %d, seeing %d",
+            ALOGE("Encoding order for %s is wrong: expecting %d, seeing %d",
                  EncodingMap[i].name, i, EncodingMap[i].opcode);
             dvmAbort();  // OK to dvmAbort - build error
         }

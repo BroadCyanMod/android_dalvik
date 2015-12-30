@@ -9,20 +9,20 @@
     stmfd   sp!, {r0-r2,lr}             @ preserve live registers
     mov     r0, r6
     @ r0=rSELF
-    mov     lr, pc
-    ldr     pc, .LdvmFastMethodTraceExit
+    ldr     ip, .LdvmFastMethodTraceExit
+    blx     ip
     ldmfd   sp!, {r0-r2,lr}             @ restore live registers
 #endif
     SAVEAREA_FROM_FP(r0, rFP)           @ r0<- saveArea (old)
     ldr     r10, [r0, #offStackSaveArea_prevFrame] @ r10<- saveArea->prevFrame
     ldrb    r8, [rSELF, #offThread_breakFlags] @ r8<- breakFlags
     ldr     rPC, [r0, #offStackSaveArea_savedPc] @ rPC<- saveArea->savedPc
+    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
 #if !defined(WITH_SELF_VERIFICATION)
     ldr     r9,  [r0, #offStackSaveArea_returnAddr] @ r9<- chaining cell ret
 #else
     mov     r9, #0                      @ disable chaining
 #endif
-    ldr     r2, [r10, #(offStackSaveArea_method - sizeofStackSaveArea)]
                                         @ r2<- method we're returning to
     cmp     r2, #0                      @ break frame?
 #if !defined(WITH_SELF_VERIFICATION)

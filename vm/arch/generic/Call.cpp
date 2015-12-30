@@ -41,11 +41,19 @@ static ffi_type* getFfiType(char sigType)
     case '[':
     case 'L': return &ffi_type_pointer;
     default:
-        LOGE("bad ffitype 0x%02x", sigType);
+        ALOGE("bad ffitype 0x%02x", sigType);
         dvmAbort();
         return NULL;
     }
 }
+
+/* We will call this generic function if there are no hints */
+#ifdef __mips__
+#define dvmPlatformInvoke dvmPlatformInvokeFFI
+
+extern "C" void dvmPlatformInvoke(void* pEnv, ClassObject* clazz, int argInfo,
+    int argc, const u4* argv, const char* signature, void* func, JValue* pResult);
+#endif
 
 /*
  * Call "func" with the specified arguments.
@@ -104,7 +112,7 @@ void dvmPlatformInvoke(void* pEnv, ClassObject* clazz, int argInfo, int argc,
      * Prep the CIF (Call InterFace object).
      */
     if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, dstArg, retType, types) != FFI_OK) {
-        LOGE("ffi_prep_cif failed");
+        ALOGE("ffi_prep_cif failed");
         dvmAbort();
     }
 

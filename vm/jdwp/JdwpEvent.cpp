@@ -161,9 +161,9 @@ static void unlockEventMutex(JdwpState* state)
  */
 static void dumpEvent(const JdwpEvent* pEvent)
 {
-    LOGI("Event id=0x%4x %p (prev=%p next=%p):",
+    ALOGI("Event id=0x%4x %p (prev=%p next=%p):",
         pEvent->requestId, pEvent, pEvent->prev, pEvent->next);
-    LOGI("  kind=%s susp=%s modCount=%d",
+    ALOGI("  kind=%s susp=%s modCount=%d",
         dvmJdwpEventKindStr(pEvent->eventKind),
         dvmJdwpSuspendPolicyStr(pEvent->suspendPolicy),
         pEvent->modCount);
@@ -171,7 +171,7 @@ static void dumpEvent(const JdwpEvent* pEvent)
     for (int i = 0; i < pEvent->modCount; i++) {
         const JdwpEventMod* pMod = &pEvent->mods[i];
         JdwpModKind kind = static_cast<JdwpModKind>(pMod->modKind);
-        LOGI("  %s", dvmJdwpModKindStr(kind));
+        ALOGI("  %s", dvmJdwpModKindStr(kind));
         /* TODO - show details */
     }
 }
@@ -293,7 +293,7 @@ void dvmJdwpUnregisterEventById(JdwpState* state, u4 requestId)
         pEvent = pEvent->next;
     }
 
-    //LOGD("Odd: no match when removing event reqId=0x%04x", requestId);
+    //ALOGD("Odd: no match when removing event reqId=0x%04x", requestId);
 
 done:
     unlockEventMutex(state);
@@ -332,8 +332,7 @@ JdwpEvent* dvmJdwpEventAlloc(int numMods)
     int allocSize = offsetof(JdwpEvent, mods) +
                     numMods * sizeof(newEvent->mods[0]);
 
-    newEvent = (JdwpEvent*)malloc(allocSize);
-    memset(newEvent, 0, allocSize);
+    newEvent = (JdwpEvent*)calloc(1, allocSize);
     return newEvent;
 }
 
@@ -396,7 +395,7 @@ static void cleanupMatchList(JdwpState* state, JdwpEvent** matchList,
             if (pEvent->mods[i].modKind == MK_COUNT &&
                 pEvent->mods[i].count.count == 0)
             {
-                LOGV("##### Removing expired event");
+                ALOGV("##### Removing expired event");
                 unregisterEvent(state, pEvent);
                 dvmJdwpEventFree(pEvent);
                 break;
@@ -423,7 +422,7 @@ static bool patternMatch(const char* pattern, const char* target)
         int targetLen = strlen(target);
         patLen--;
         // TODO: remove printf when we find a test case to verify this
-        LOGE(">>> comparing '%s' to '%s'",
+        ALOGE(">>> comparing '%s' to '%s'",
             pattern+1, target + (targetLen-patLen));
 
         if (targetLen < patLen)
@@ -517,7 +516,7 @@ static bool modsMatch(JdwpState* state, JdwpEvent* pEvent, ModBasket* basket)
                 return false;
             break;
         default:
-            LOGE("unhandled mod kind %d", pMod->modKind);
+            ALOGE("unhandled mod kind %d", pMod->modKind);
             assert(false);
             break;
         }
@@ -591,7 +590,7 @@ static void suspendByPolicy(JdwpState* state, JdwpSuspendPolicy suspendPolicy)
 
     /* this is rare but possible -- see CLASS_PREPARE handling */
     if (dvmDbgGetThreadSelfId() == state->debugThreadId) {
-        LOGI("NOTE: suspendByPolicy not suspending JDWP thread");
+        ALOGI("NOTE: suspendByPolicy not suspending JDWP thread");
         return;
     }
 
@@ -614,7 +613,7 @@ static void suspendByPolicy(JdwpState* state, JdwpSuspendPolicy suspendPolicy)
         dvmJdwpSetWaitForEventThread(state, dvmDbgGetThreadSelfId());
 
         /* leave pReq->invokeNeeded raised so we can check reentrancy */
-        LOGV("invoking method...");
+        ALOGV("invoking method...");
         dvmDbgExecuteMethod(pReq);
 
         pReq->err = ERR_NONE;
@@ -622,7 +621,7 @@ static void suspendByPolicy(JdwpState* state, JdwpSuspendPolicy suspendPolicy)
         /* clear this before signaling */
         pReq->invokeNeeded = false;
 
-        LOGV("invoke complete, signaling and self-suspending");
+        ALOGV("invoke complete, signaling and self-suspending");
         dvmDbgLockMutex(&pReq->lock);
         dvmDbgCondSignal(&pReq->cv);
         dvmDbgUnlockMutex(&pReq->lock);
@@ -664,14 +663,14 @@ void dvmJdwpSetWaitForEventThread(JdwpState* state, ObjectId threadId)
      * go to sleep indefinitely.
      */
     while (state->eventThreadId != 0) {
-        LOGV("event in progress (0x%llx), 0x%llx sleeping",
+        ALOGV("event in progress (0x%llx), 0x%llx sleeping",
             state->eventThreadId, threadId);
         waited = true;
         dvmDbgCondWait(&state->eventThreadCond, &state->eventThreadLock);
     }
 
     if (waited || threadId != 0)
-        LOGV("event token grabbed (0x%llx)", threadId);
+        ALOGV("event token grabbed (0x%llx)", threadId);
     if (threadId != 0)
         state->eventThreadId = threadId;
 
@@ -691,7 +690,7 @@ void dvmJdwpClearWaitForEventThread(JdwpState* state)
     dvmDbgLockMutex(&state->eventThreadLock);
 
     assert(state->eventThreadId != 0);
-    LOGV("cleared event token (0x%llx)", state->eventThreadId);
+    ALOGV("cleared event token (0x%llx)", state->eventThreadId);
 
     state->eventThreadId = 0;
 
@@ -757,8 +756,8 @@ bool dvmJdwpPostVMStart(JdwpState* state, bool suspend)
 
     ExpandBuf* pReq = NULL;
     if (true) {
-        LOGV("EVENT: %s", dvmJdwpEventKindStr(EK_VM_START));
-        LOGV("  suspendPolicy=%s", dvmJdwpSuspendPolicyStr(suspendPolicy));
+        ALOGV("EVENT: %s", dvmJdwpEventKindStr(EK_VM_START));
+        ALOGV("  suspendPolicy=%s", dvmJdwpSuspendPolicyStr(suspendPolicy));
 
         pReq = eventPrep();
         expandBufAdd1(pReq, suspendPolicy);
@@ -829,7 +828,7 @@ bool dvmJdwpPostLocationEvent(JdwpState* state, const JdwpLocation* pLoc,
      * this is mostly paranoia.)
      */
     if (basket.threadId == state->debugThreadId) {
-        LOGV("Ignoring location event in JDWP thread");
+        ALOGV("Ignoring location event in JDWP thread");
         free(nameAlloc);
         return false;
     }
@@ -844,7 +843,7 @@ bool dvmJdwpPostLocationEvent(JdwpState* state, const JdwpLocation* pLoc,
      * method invocation to complete.
      */
     if (invokeInProgress(state)) {
-        LOGV("Not checking breakpoints during invoke (%s)", basket.className);
+        ALOGV("Not checking breakpoints during invoke (%s)", basket.className);
         free(nameAlloc);
         return false;
     }
@@ -870,14 +869,14 @@ bool dvmJdwpPostLocationEvent(JdwpState* state, const JdwpLocation* pLoc,
 
     ExpandBuf* pReq = NULL;
     if (matchCount != 0) {
-        LOGV("EVENT: %s(%d total) %s.%s thread=%llx code=%llx)",
+        ALOGV("EVENT: %s(%d total) %s.%s thread=%llx code=%llx)",
             dvmJdwpEventKindStr(matchList[0]->eventKind), matchCount,
             basket.className,
             dvmDbgGetMethodName(pLoc->classId, pLoc->methodId),
             basket.threadId, pLoc->idx);
 
         suspendPolicy = scanSuspendPolicy(matchList, matchCount);
-        LOGV("  suspendPolicy=%s",
+        ALOGV("  suspendPolicy=%s",
             dvmJdwpSuspendPolicyStr(suspendPolicy));
 
         pReq = eventPrep();
@@ -927,7 +926,7 @@ bool dvmJdwpPostThreadChange(JdwpState* state, ObjectId threadId, bool start)
      * I don't think this can happen.
      */
     if (invokeInProgress(state)) {
-        LOGW("Not posting thread change during invoke");
+        ALOGW("Not posting thread change during invoke");
         return false;
     }
 
@@ -950,12 +949,12 @@ bool dvmJdwpPostThreadChange(JdwpState* state, ObjectId threadId, bool start)
 
     ExpandBuf* pReq = NULL;
     if (matchCount != 0) {
-        LOGV("EVENT: %s(%d total) thread=%llx)",
+        ALOGV("EVENT: %s(%d total) thread=%llx)",
             dvmJdwpEventKindStr(matchList[0]->eventKind), matchCount,
             basket.threadId);
 
         suspendPolicy = scanSuspendPolicy(matchList, matchCount);
-        LOGV("  suspendPolicy=%s",
+        ALOGV("  suspendPolicy=%s",
             dvmJdwpSuspendPolicyStr(suspendPolicy));
 
         pReq = eventPrep();
@@ -995,7 +994,7 @@ bool dvmJdwpPostThreadChange(JdwpState* state, ObjectId threadId, bool start)
  */
 bool dvmJdwpPostVMDeath(JdwpState* state)
 {
-    LOGV("EVENT: %s", dvmJdwpEventKindStr(EK_VM_DEATH));
+    ALOGV("EVENT: %s", dvmJdwpEventKindStr(EK_VM_DEATH));
 
     ExpandBuf* pReq = eventPrep();
     expandBufAdd1(pReq, SP_NONE);
@@ -1039,7 +1038,7 @@ bool dvmJdwpPostException(JdwpState* state, const JdwpLocation* pThrowLoc,
 
     /* don't try to post an exception caused by the debugger */
     if (invokeInProgress(state)) {
-        LOGV("Not posting exception hit during invoke (%s)",basket.className);
+        ALOGV("Not posting exception hit during invoke (%s)",basket.className);
         free(nameAlloc);
         return false;
     }
@@ -1054,24 +1053,24 @@ bool dvmJdwpPostException(JdwpState* state, const JdwpLocation* pThrowLoc,
 
     ExpandBuf* pReq = NULL;
     if (matchCount != 0) {
-        LOGV("EVENT: %s(%d total) thread=%llx exceptId=%llx caught=%d)",
+        ALOGV("EVENT: %s(%d total) thread=%llx exceptId=%llx caught=%d)",
             dvmJdwpEventKindStr(matchList[0]->eventKind), matchCount,
             basket.threadId, exceptionId, basket.caught);
-        LOGV("  throw: %d %llx %x %lld (%s.%s)", pThrowLoc->typeTag,
+        ALOGV("  throw: %d %llx %x %lld (%s.%s)", pThrowLoc->typeTag,
             pThrowLoc->classId, pThrowLoc->methodId, pThrowLoc->idx,
             dvmDbgGetClassDescriptor(pThrowLoc->classId),
             dvmDbgGetMethodName(pThrowLoc->classId, pThrowLoc->methodId));
         if (pCatchLoc->classId == 0) {
-            LOGV("  catch: (not caught)");
+            ALOGV("  catch: (not caught)");
         } else {
-            LOGV("  catch: %d %llx %x %lld (%s.%s)", pCatchLoc->typeTag,
+            ALOGV("  catch: %d %llx %x %lld (%s.%s)", pCatchLoc->typeTag,
                 pCatchLoc->classId, pCatchLoc->methodId, pCatchLoc->idx,
                 dvmDbgGetClassDescriptor(pCatchLoc->classId),
                 dvmDbgGetMethodName(pCatchLoc->classId, pCatchLoc->methodId));
         }
 
         suspendPolicy = scanSuspendPolicy(matchList, matchCount);
-        LOGV("  suspendPolicy=%s",
+        ALOGV("  suspendPolicy=%s",
             dvmJdwpSuspendPolicyStr(suspendPolicy));
 
         pReq = eventPrep();
@@ -1133,7 +1132,7 @@ bool dvmJdwpPostClassPrepare(JdwpState* state, int tag, RefTypeId refTypeId,
 
     /* suppress class prep caused by debugger */
     if (invokeInProgress(state)) {
-        LOGV("Not posting class prep caused by invoke (%s)",basket.className);
+        ALOGV("Not posting class prep caused by invoke (%s)",basket.className);
         free(nameAlloc);
         return false;
     }
@@ -1149,12 +1148,12 @@ bool dvmJdwpPostClassPrepare(JdwpState* state, int tag, RefTypeId refTypeId,
 
     ExpandBuf* pReq = NULL;
     if (matchCount != 0) {
-        LOGV("EVENT: %s(%d total) thread=%llx)",
+        ALOGV("EVENT: %s(%d total) thread=%llx)",
             dvmJdwpEventKindStr(matchList[0]->eventKind), matchCount,
             basket.threadId);
 
         suspendPolicy = scanSuspendPolicy(matchList, matchCount);
-        LOGV("  suspendPolicy=%s",
+        ALOGV("  suspendPolicy=%s",
             dvmJdwpSuspendPolicyStr(suspendPolicy));
 
         if (basket.threadId == state->debugThreadId) {
@@ -1163,7 +1162,7 @@ bool dvmJdwpPostClassPrepare(JdwpState* state, int tag, RefTypeId refTypeId,
              * should set threadId to null and if any threads were supposed
              * to be suspended then we suspend all other threads.
              */
-            LOGV("  NOTE: class prepare in debugger thread!");
+            ALOGV("  NOTE: class prepare in debugger thread!");
             basket.threadId = 0;
             if (suspendPolicy == SP_EVENT_THREAD)
                 suspendPolicy = SP_ALL;

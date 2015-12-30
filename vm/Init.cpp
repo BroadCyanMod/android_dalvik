@@ -23,13 +23,20 @@
 #include <signal.h>
 #include <limits.h>
 #include <ctype.h>
+#include <sys/mount.h>
 #include <sys/wait.h>
+#include <linux/fs.h>
+#include <cutils/fs.h>
 #include <unistd.h>
 
 #include "Dalvik.h"
 #include "test/Test.h"
 #include "mterp/Mterp.h"
 #include "Hash.h"
+
+#if defined(WITH_JIT)
+#include "compiler/codegen/Optimizer.h"
+#endif
 
 #define kMinHeapStartSize   (1*1024*1024)
 #define kMinHeapSize        (2*1024*1024)
@@ -133,6 +140,9 @@ static void usage(const char* progName)
     dvmFprintf(stderr, "  -Xjitblocking\n");
     dvmFprintf(stderr, "  -Xjitmethod:signature[,signature]* "
                        "(eg Ljava/lang/String\\;replace)\n");
+    dvmFprintf(stderr, "  -Xjitclass:classname[,classname]*\n");
+    dvmFprintf(stderr, "  -Xjitoffset:offset[,offset]\n");
+    dvmFprintf(stderr, "  -Xjitconfig:filename\n");
     dvmFprintf(stderr, "  -Xjitcheckcg\n");
     dvmFprintf(stderr, "  -Xjitverbose\n");
     dvmFprintf(stderr, "  -Xjitprofile\n");
@@ -229,16 +239,16 @@ static void showVersion()
  * Returns 0 (a useless size) if "s" is malformed or specifies a low or
  * non-evenly-divisible value.
  */
-static size_t parseMemOption(const char *s, size_t div)
+static size_t parseMemOption(const char* s, size_t div)
 {
     /* strtoul accepts a leading [+-], which we don't want,
      * so make sure our string starts with a decimal digit.
      */
     if (isdigit(*s)) {
-        const char *s2;
+        const char* s2;
         size_t val;
 
-        val = strtoul(s, (char **)&s2, 10);
+        val = strtoul(s, (char* *)&s2, 10);
         if (s2 != s) {
             /* s2 should be pointing just after the number.
              * If this is the end of the string, the user
@@ -323,7 +333,7 @@ static bool handleJdwpOption(const char* name, const char* value)
         } else if (strcmp(value, "dt_android_adb") == 0) {
             gDvm.jdwpTransport = kJdwpTransportAndroidAdb;
         } else {
-            LOGE("JDWP transport '%s' not supported", value);
+            ALOGE("JDWP transport '%s' not supported", value);
             return false;
         }
     } else if (strcmp(name, "server") == 0) {
@@ -332,7 +342,7 @@ static bool handleJdwpOption(const char* name, const char* value)
         else if (*value == 'y')
             gDvm.jdwpServer = true;
         else {
-            LOGE("JDWP option 'server' must be 'y' or 'n'");
+            ALOGE("JDWP option 'server' must be 'y' or 'n'");
             return false;
         }
     } else if (strcmp(name, "suspend") == 0) {
@@ -341,7 +351,7 @@ static bool handleJdwpOption(const char* name, const char* value)
         else if (*value == 'y')
             gDvm.jdwpSuspend = true;
         else {
-            LOGE("JDWP option 'suspend' must be 'y' or 'n'");
+            ALOGE("JDWP option 'suspend' must be 'y' or 'n'");
             return false;
         }
     } else if (strcmp(name, "address") == 0) {
@@ -358,12 +368,12 @@ static bool handleJdwpOption(const char* name, const char* value)
             value = colon + 1;
         }
         if (*value == '\0') {
-            LOGE("JDWP address missing port");
+            ALOGE("JDWP address missing port");
             return false;
         }
         port = strtol(value, &end, 10);
         if (*end != '\0') {
-            LOGE("JDWP address has junk in port field '%s'", value);
+            ALOGE("JDWP address has junk in port field '%s'", value);
             return false;
         }
         gDvm.jdwpPort = port;
@@ -373,9 +383,9 @@ static bool handleJdwpOption(const char* name, const char* value)
                strcmp(name, "timeout") == 0)
     {
         /* valid but unsupported */
-        LOGI("Ignoring JDWP option '%s'='%s'", name, value);
+        ALOGI("Ignoring JDWP option '%s'='%s'", name, value);
     } else {
-        LOGI("Ignoring unrecognized JDWP option '%s'='%s'", name, value);
+        ALOGI("Ignoring unrecognized JDWP option '%s'='%s'", name, value);
     }
 
     return true;
@@ -400,14 +410,14 @@ static bool parseJdwpOptions(const char* str)
 
         value = strchr(name, '=');
         if (value == NULL) {
-            LOGE("JDWP opts: garbage at '%s'", name);
+            ALOGE("JDWP opts: garbage at '%s'", name);
             goto bail;
         }
 
         comma = strchr(name, ',');      // use name, not value, for safety
         if (comma != NULL) {
             if (comma < value) {
-                LOGE("JDWP opts: found comma before '=' in '%s'", mangle);
+                ALOGE("JDWP opts: found comma before '=' in '%s'", mangle);
                 goto bail;
             }
             *comma = '\0';
@@ -429,11 +439,11 @@ static bool parseJdwpOptions(const char* str)
      * Make sure the combination of arguments makes sense.
      */
     if (gDvm.jdwpTransport == kJdwpTransportUnknown) {
-        LOGE("JDWP opts: must specify transport");
+        ALOGE("JDWP opts: must specify transport");
         goto bail;
     }
     if (!gDvm.jdwpServer && (gDvm.jdwpHost == NULL || gDvm.jdwpPort == 0)) {
-        LOGE("JDWP opts: when server=n, must specify host and port");
+        ALOGE("JDWP opts: when server=n, must specify host and port");
         goto bail;
     }
     // transport mandatory
@@ -480,7 +490,7 @@ static bool enableAssertions(const char* pkgOrClass, bool enable)
             pCtrl->pkgOrClass = dvmDotToSlash(pkgOrClass+1);    // skip ':'
             if (pCtrl->pkgOrClass == NULL) {
                 /* can happen if class name includes an illegal '/' */
-                LOGW("Unable to process assertion arg '%s'", pkgOrClass);
+                ALOGW("Unable to process assertion arg '%s'", pkgOrClass);
                 return false;
             }
 
@@ -517,13 +527,13 @@ static bool enableAssertions(const char* pkgOrClass, bool enable)
 void dvmLateEnableAssertions()
 {
     if (gDvm.assertionCtrl == NULL) {
-        LOGD("Not late-enabling assertions: no assertionCtrl array");
+        ALOGD("Not late-enabling assertions: no assertionCtrl array");
         return;
     } else if (gDvm.assertionCtrlCount != 0) {
-        LOGD("Not late-enabling assertions: some asserts already configured");
+        ALOGD("Not late-enabling assertions: some asserts already configured");
         return;
     }
-    LOGD("Late-enabling assertions");
+    ALOGD("Late-enabling assertions");
 
     /* global enable for all but system */
     AssertionControl* pCtrl = gDvm.assertionCtrl;
@@ -549,11 +559,11 @@ static void freeAssertionCtrl()
 
 #if defined(WITH_JIT)
 /* Parse -Xjitop to selectively turn on/off certain opcodes for JIT */
-static void processXjitop(const char *opt)
+static void processXjitop(const char* opt)
 {
     if (opt[7] == ':') {
-        const char *startPtr = &opt[8];
-        char *endPtr = NULL;
+        const char* startPtr = &opt[8];
+        char* endPtr = NULL;
 
         do {
             long startValue, endValue;
@@ -571,7 +581,7 @@ static void processXjitop(const char *opt)
                 }
 
                 for (; startValue <= endValue; startValue++) {
-                    LOGW("Dalvik opcode %x is selected for debugging",
+                    ALOGW("Dalvik opcode %x is selected for debugging",
                          (unsigned int) startValue);
                     /* Mark the corresponding bit to 1 */
                     gDvmJit.opList[startValue >> 3] |= 1 << (startValue & 0x7);
@@ -602,15 +612,50 @@ static void processXjitop(const char *opt)
     }
 }
 
-/* Parse -Xjitmethod to selectively turn on/off certain methods for JIT */
-static void processXjitmethod(const char *opt)
-{
-    char *buf = strdup(&opt[12]);
-    char *start, *end;
-
-    gDvmJit.methodTable = dvmHashTableCreate(8, NULL);
-
+/* Parse -Xjitoffset to selectively turn on/off traces with certain offsets for JIT */
+static void processXjitoffset(const char* opt) {
+    gDvmJit.num_entries_pcTable = 0;
+    char* buf = strdup(opt);
+    char* start, *end;
     start = buf;
+    int idx = 0;
+    do {
+        end = strchr(start, ',');
+        if (end) {
+            *end = 0;
+        }
+
+        dvmFprintf(stderr, "processXjitoffset start = %s\n", start);
+        char* tmp = strdup(start);
+        gDvmJit.pcTable[idx++] = atoi(tmp);
+        free(tmp);
+        if (idx >= COMPILER_PC_OFFSET_SIZE) {
+            dvmFprintf(stderr, "processXjitoffset: ignore entries beyond %d\n", COMPILER_PC_OFFSET_SIZE);
+            break;
+        }
+        if (end) {
+            start = end + 1;
+        } else {
+            break;
+        }
+    } while (1);
+    gDvmJit.num_entries_pcTable = idx;
+    free(buf);
+}
+
+/* Parse -Xjitmethod to selectively turn on/off certain methods for JIT */
+static void processXjitmethod(const char* opt, bool isMethod) {
+    char* buf = strdup(opt);
+
+    if (isMethod && gDvmJit.methodTable == NULL) {
+        gDvmJit.methodTable = dvmHashTableCreate(8, NULL);
+    }
+    if (!isMethod && gDvmJit.classTable == NULL) {
+        gDvmJit.classTable = dvmHashTableCreate(8, NULL);
+    }
+
+    char* start = buf;
+    char* end;
     /*
      * Break comma-separated method signatures and enter them into the hash
      * table individually.
@@ -624,10 +669,9 @@ static void processXjitmethod(const char *opt)
         }
 
         hashValue = dvmComputeUtf8Hash(start);
+        dvmHashTableLookup(isMethod ? gDvmJit.methodTable : gDvmJit.classTable,
+                           hashValue, strdup(start), (HashCompareFunc) strcmp, true);
 
-        dvmHashTableLookup(gDvmJit.methodTable, hashValue,
-                           strdup(start),
-                           (HashCompareFunc) strcmp, true);
         if (end) {
             start = end + 1;
         } else {
@@ -635,6 +679,88 @@ static void processXjitmethod(const char *opt)
         }
     } while (1);
     free(buf);
+}
+
+/* The format of jit_config.list:
+   EXCLUDE or INCLUDE
+   CLASS
+   prefix1 ...
+   METHOD
+   prefix 1 ...
+   OFFSET
+   index ... //each pair is a range, if pcOff falls into a range, JIT
+*/
+static int processXjitconfig(const char* opt) {
+   FILE* fp = fopen(opt, "r");
+   if (fp == NULL) {
+       return -1;
+   }
+
+   char fLine[500];
+   bool startClass = false, startMethod = false, startOffset = false;
+   gDvmJit.num_entries_pcTable = 0;
+   int idx = 0;
+
+   while (fgets(fLine, 500, fp) != NULL) {
+       char* curLine = strtok(fLine, " \t\r\n");
+       /* handles keyword CLASS, METHOD, INCLUDE, EXCLUDE */
+       if (!strncmp(curLine, "CLASS", 5)) {
+           startClass = true;
+           startMethod = false;
+           startOffset = false;
+           continue;
+       }
+       if (!strncmp(curLine, "METHOD", 6)) {
+           startMethod = true;
+           startClass = false;
+           startOffset = false;
+           continue;
+       }
+       if (!strncmp(curLine, "OFFSET", 6)) {
+           startOffset = true;
+           startMethod = false;
+           startClass = false;
+           continue;
+       }
+       if (!strncmp(curLine, "EXCLUDE", 7)) {
+          gDvmJit.includeSelectedMethod = false;
+          continue;
+       }
+       if (!strncmp(curLine, "INCLUDE", 7)) {
+          gDvmJit.includeSelectedMethod = true;
+          continue;
+       }
+       if (!startMethod && !startClass && !startOffset) {
+         continue;
+       }
+
+        int hashValue = dvmComputeUtf8Hash(curLine);
+        if (startMethod) {
+            if (gDvmJit.methodTable == NULL) {
+                gDvmJit.methodTable = dvmHashTableCreate(8, NULL);
+            }
+            dvmHashTableLookup(gDvmJit.methodTable, hashValue,
+                               strdup(curLine),
+                               (HashCompareFunc) strcmp, true);
+        } else if (startClass) {
+            if (gDvmJit.classTable == NULL) {
+                gDvmJit.classTable = dvmHashTableCreate(8, NULL);
+            }
+            dvmHashTableLookup(gDvmJit.classTable, hashValue,
+                               strdup(curLine),
+                               (HashCompareFunc) strcmp, true);
+        } else if (startOffset) {
+           int tmpInt = atoi(curLine);
+           gDvmJit.pcTable[idx++] = tmpInt;
+           if (idx >= COMPILER_PC_OFFSET_SIZE) {
+               printf("processXjitoffset: ignore entries beyond %d\n", COMPILER_PC_OFFSET_SIZE);
+               break;
+           }
+        }
+   }
+   gDvmJit.num_entries_pcTable = idx;
+   fclose(fp);
+   return 0;
 }
 #endif
 
@@ -654,9 +780,9 @@ static int processOptions(int argc, const char* const argv[],
 {
     int i;
 
-    LOGV("VM options (%d):", argc);
+    ALOGV("VM options (%d):", argc);
     for (i = 0; i < argc; i++)
-        LOGV("  %d: '%s'", i, argv[i]);
+        ALOGV("  %d: '%s'", i, argv[i]);
 
     /*
      * Over-allocate AssertionControl array for convenience.  If allocated,
@@ -795,11 +921,44 @@ static int processOptions(int argc, const char* const argv[],
                 dvmFprintf(stderr, "Invalid -XX:HeapGrowthLimit option '%s'\n", argv[i]);
                 return -1;
             }
+        } else if (strncmp(argv[i], "-XX:HeapMinFree=", 16) == 0) {
+            size_t val = parseMemOption(argv[i] + 16, 1024);
+            if (val != 0) {
+                gDvm.heapMinFree = val;
+            } else {
+                dvmFprintf(stderr, "Invalid -XX:HeapMinFree option '%s'\n", argv[i]);
+                return -1;
+            }
+        } else if (strncmp(argv[i], "-XX:HeapMaxFree=", 16) == 0) {
+            size_t val = parseMemOption(argv[i] + 16, 1024);
+            if (val != 0) {
+                gDvm.heapMaxFree = val;
+            } else {
+                dvmFprintf(stderr, "Invalid -XX:HeapMaxFree option '%s'\n", argv[i]);
+                return -1;
+            }
+        } else if (strncmp(argv[i], "-XX:HeapTargetUtilization=", 26) == 0) {
+            const char* start = argv[i] + 26;
+            const char* end = start;
+            double val = strtod(start, const_cast<char**>(&end));
+            // Ensure that we have a value, there was no cruft after it and it
+            // satisfies a sensible range.
+            bool sane_val = (start != end) && (end[0] == '\0') &&
+                (val >= 0.1) && (val <= 0.9);
+            if (sane_val) {
+                gDvm.heapTargetUtilization = val;
+            } else {
+                dvmFprintf(stderr, "Invalid -XX:HeapTargetUtilization option '%s'\n", argv[i]);
+                return -1;
+            }
         } else if (strncmp(argv[i], "-Xss", 4) == 0) {
             size_t val = parseMemOption(argv[i]+4, 1);
             if (val != 0) {
                 if (val >= kMinStackSize && val <= kMaxStackSize) {
                     gDvm.stackSize = val;
+                    if (val > gDvm.mainThreadStackSize) {
+                        gDvm.mainThreadStackSize = val;
+                    }
                 } else {
                     dvmFprintf(stderr, "Invalid -Xss '%s', range is %d to %d\n",
                         argv[i], kMinStackSize, kMaxStackSize);
@@ -807,6 +966,21 @@ static int processOptions(int argc, const char* const argv[],
                 }
             } else {
                 dvmFprintf(stderr, "Invalid -Xss option '%s'\n", argv[i]);
+                return -1;
+            }
+
+        } else if (strncmp(argv[i], "-XX:mainThreadStackSize=", strlen("-XX:mainThreadStackSize=")) == 0) {
+            size_t val = parseMemOption(argv[i] + strlen("-XX:mainThreadStackSize="), 1);
+            if (val != 0) {
+                if (val >= kMinStackSize && val <= kMaxStackSize) {
+                    gDvm.mainThreadStackSize = val;
+                } else {
+                    dvmFprintf(stderr, "Invalid -XX:mainThreadStackSize '%s', range is %d to %d\n",
+                               argv[i], kMinStackSize, kMaxStackSize);
+                    return -1;
+                }
+            } else {
+                dvmFprintf(stderr, "Invalid -XX:mainThreadStackSize option '%s'\n", argv[i]);
                 return -1;
             }
 
@@ -936,8 +1110,14 @@ static int processOptions(int argc, const char* const argv[],
 #ifdef WITH_JIT
         } else if (strncmp(argv[i], "-Xjitop", 7) == 0) {
             processXjitop(argv[i]);
-        } else if (strncmp(argv[i], "-Xjitmethod", 11) == 0) {
-            processXjitmethod(argv[i]);
+        } else if (strncmp(argv[i], "-Xjitmethod:", 12) == 0) {
+            processXjitmethod(argv[i] + strlen("-Xjitmethod:"), true);
+        } else if (strncmp(argv[i], "-Xjitclass:", 11) == 0) {
+            processXjitmethod(argv[i] + strlen("-Xjitclass:"), false);
+        } else if (strncmp(argv[i], "-Xjitoffset:", 12) == 0) {
+            processXjitoffset(argv[i] + strlen("-Xjitoffset:"));
+        } else if (strncmp(argv[i], "-Xjitconfig:", 12) == 0) {
+            processXjitconfig(argv[i] + strlen("-Xjitconfig:"));
         } else if (strncmp(argv[i], "-Xjitblocking", 13) == 0) {
           gDvmJit.blockingMode = true;
         } else if (strncmp(argv[i], "-Xjitthreshold:", 15) == 0) {
@@ -950,6 +1130,8 @@ static int processOptions(int argc, const char* const argv[],
           gDvmJit.checkCallGraph = true;
           /* Need to enable blocking mode due to stack crawling */
           gDvmJit.blockingMode = true;
+        } else if (strncmp(argv[i], "-Xjitdumpbin", 12) == 0) {
+          gDvmJit.printBinary = true;
         } else if (strncmp(argv[i], "-Xjitverbose", 12) == 0) {
           gDvmJit.printMe = true;
         } else if (strncmp(argv[i], "-Xjitprofile", 12) == 0) {
@@ -1004,7 +1186,7 @@ static int processOptions(int argc, const char* const argv[],
                 dvmFprintf(stderr, "Bad value for -Xgc");
                 return -1;
             }
-            LOGV("Precise GC configured %s", gDvm.preciseGc ? "ON" : "OFF");
+            ALOGV("Precise GC configured %s", gDvm.preciseGc ? "ON" : "OFF");
 
         } else if (strcmp(argv[i], "-Xcheckdexsum") == 0) {
             gDvm.verifyDexChecksum = true;
@@ -1056,6 +1238,16 @@ static void setCommandLineDefaults()
     gDvm.heapMaximumSize = 16 * 1024 * 1024;  // Spec says 75% physical mem
     gDvm.heapGrowthLimit = 0;  // 0 means no growth limit
     gDvm.stackSize = kDefaultStackSize;
+    gDvm.mainThreadStackSize = kDefaultStackSize;
+    // When the heap is less than the maximum or growth limited size,
+    // fix the free portion of the heap. The utilization is the ratio
+    // of live to free memory, 0.5 implies half the heap is available
+    // to allocate into before a GC occurs. Min free and max free
+    // force the free memory to never be smaller than min free or
+    // larger than max free.
+    gDvm.heapTargetUtilization = 0.5;
+    gDvm.heapMaxFree = 2 * 1024 * 1024;
+    gDvm.heapMinFree = gDvm.heapMaxFree / 4;
 
     gDvm.concurrentMarkSweep = true;
 
@@ -1080,6 +1272,14 @@ static void setCommandLineDefaults()
      */
 #if defined(WITH_JIT)
     gDvm.executionMode = kExecutionModeJit;
+    gDvmJit.num_entries_pcTable = 0;
+    gDvmJit.includeSelectedMethod = false;
+    gDvmJit.includeSelectedOffset = false;
+    gDvmJit.methodTable = NULL;
+    gDvmJit.classTable = NULL;
+
+    gDvm.constInit = false;
+    gDvm.commonInit = false;
 #else
     gDvm.executionMode = kExecutionModeInterpFast;
 #endif
@@ -1105,7 +1305,7 @@ static void busCatcher(int signum, siginfo_t* info, void* context)
 {
     void* addr = info->si_addr;
 
-    LOGE("Caught a SIGBUS (%d), addr=%p", signum, addr);
+    ALOGE("Caught a SIGBUS (%d), addr=%p", signum, addr);
 
     /*
      * If we return at this point the SIGBUS just keeps happening, so we
@@ -1186,9 +1386,9 @@ std::string dvmStartup(int argc, const char* const argv[],
 
     assert(gDvm.initializing);
 
-    LOGV("VM init args (%d):", argc);
+    ALOGV("VM init args (%d):", argc);
     for (int i = 0; i < argc; i++) {
-        LOGV("  %d: '%s'", i, argv[i]);
+        ALOGV("  %d: '%s'", i, argv[i]);
     }
     setCommandLineDefaults();
 
@@ -1207,17 +1407,17 @@ std::string dvmStartup(int argc, const char* const argv[],
 #if WITH_EXTRA_GC_CHECKS > 1
     /* only "portable" interp has the extra goodies */
     if (gDvm.executionMode != kExecutionModeInterpPortable) {
-        LOGI("Switching to 'portable' interpreter for GC checks");
+        ALOGI("Switching to 'portable' interpreter for GC checks");
         gDvm.executionMode = kExecutionModeInterpPortable;
     }
 #endif
 
     /* Configure group scheduling capabilities */
     if (!access("/dev/cpuctl/tasks", F_OK)) {
-        LOGV("Using kernel group scheduling");
+        ALOGV("Using kernel group scheduling");
         gDvm.kernelGroupScheduling = 1;
     } else {
-        LOGV("Using kernel scheduler policies");
+        ALOGV("Using kernel scheduler policies");
     }
 
     /* configure signal handling */
@@ -1231,12 +1431,13 @@ std::string dvmStartup(int argc, const char* const argv[],
     }
 
     /* mterp setup */
-    LOGV("Using executionMode %d", gDvm.executionMode);
+    ALOGV("Using executionMode %d", gDvm.executionMode);
     dvmCheckAsmConstants();
 
     /*
      * Initialize components.
      */
+    dvmQuasiAtomicsStartup();
     if (!dvmAllocTrackerStartup()) {
         return "dvmAllocTrackerStartup failed";
     }
@@ -1350,7 +1551,7 @@ std::string dvmStartup(int argc, const char* const argv[],
      */
     if (dvmReferenceTableEntries(&dvmThreadSelf()->internalLocalRefTable) != 0)
     {
-        LOGW("Warning: tracked references remain post-initialization");
+        ALOGW("Warning: tracked references remain post-initialization");
         dvmDumpReferenceTable(&dvmThreadSelf()->internalLocalRefTable, "MAIN");
     }
 
@@ -1380,9 +1581,9 @@ std::string dvmStartup(int argc, const char* const argv[],
 
 #ifndef NDEBUG
     if (!dvmTestHash())
-        LOGE("dvmTestHash FAILED");
+        ALOGE("dvmTestHash FAILED");
     if (false /*noisy!*/ && !dvmTestIndirectRefTable())
-        LOGE("dvmTestIndirectRefTable FAILED");
+        ALOGE("dvmTestIndirectRefTable FAILED");
 #endif
 
     if (dvmCheckException(dvmThreadSelf())) {
@@ -1392,6 +1593,15 @@ std::string dvmStartup(int argc, const char* const argv[],
 
     scopedShutdown.disarm();
     return "";
+}
+
+static void loadJniLibrary(const char* name) {
+    std::string mappedName(StringPrintf(OS_SHARED_LIB_FORMAT_STR, name));
+    char* reason = NULL;
+    if (!dvmLoadNativeCode(mappedName.c_str(), NULL, &reason)) {
+        ALOGE("dvmLoadNativeCode failed for \"%s\": %s", name, reason);
+        dvmAbort();
+    }
 }
 
 /*
@@ -1408,20 +1618,18 @@ std::string dvmStartup(int argc, const char* const argv[],
  */
 static bool registerSystemNatives(JNIEnv* pEnv)
 {
-    Thread* self;
+    // Main thread is always first in list.
+    Thread* self = gDvm.threadList;
 
-    /* main thread is always first in list */
-    self = gDvm.threadList;
-
-    /* must set this before allowing JNI-based method registration */
+    // Must set this before allowing JNI-based method registration.
     self->status = THREAD_NATIVE;
 
-    if (jniRegisterSystemMethods(pEnv) < 0) {
-        LOGE("jniRegisterSystemMethods failed");
-        return false;
-    }
+    // Most JNI libraries can just use System.loadLibrary, but you can't
+    // if you're the library that implements System.loadLibrary!
+    loadJniLibrary("javacore");
+    loadJniLibrary("nativehelper");
 
-    /* back to run mode */
+    // Back to run mode.
     self->status = THREAD_RUNNING;
 
     return true;
@@ -1435,6 +1643,60 @@ static bool initZygote()
 {
     /* zygote goes into its own process group */
     setpgid(0,0);
+
+    // See storage config details at http://source.android.com/tech/storage/
+    // Create private mount namespace shared by all children
+    if (unshare(CLONE_NEWNS) == -1) {
+        SLOGE("Failed to unshare(): %s", strerror(errno));
+        return -1;
+    }
+
+    // Mark ANDROID_STORAGE (e.g., /storage) as being a slave so that changes
+    // from default namespace only flow into our children.  Notes:
+    // 1. ANDROID_STORAGE must already serve as a mountpoint, e.g., for a tmpfs
+    //    volume, as only mountpoints may be marked and rootfs cannot be bind
+    //    mounted.
+    // 2. EMULATED_STORAGE_TARGET (e.g., /storage/emulated), if used, must be
+    //    path-prefixed by ANDROID_STORAGE.
+    // 3. Multi-user sandbox mounts must be made under ANDROID_STORAGE to
+    //    remain hidden from other users.
+    // 4. Dalvik-based apps may mount anywhere, except under ANDROID_STORAGE,
+    //    to provide a system-wide shared mount between apps and users.
+    const char* storage_base = getenv("ANDROID_STORAGE");
+    if (storage_base != NULL) {
+        if (mount(NULL, storage_base, NULL, (MS_SLAVE | MS_REC), NULL) == 0) {
+            // ANDROID_STORAGE successfully marked as slave, leave the rest of the
+            // filesystem hierarchy marked as shared.
+            goto mounted_slave;
+        } else {
+            // Warn only, init.rc is likely missing a tmpfs mount for ANDROID_STORAGE.
+            SLOGW("Failed to mount %s as MS_SLAVE: %s", storage_base, strerror(errno));
+        }
+    } else {
+        SLOGW("ANDROID_STORAGE environment variable undefined");
+    }
+
+    // Fallback: Mark rootfs as being a slave so that changes from default
+    // namespace only flow into our children.  All mounts under "/" will be
+    // hidden from other apps and users.
+    if (mount("rootfs", "/", NULL, (MS_SLAVE | MS_REC), NULL) == -1) {
+        SLOGE("Failed to mount() rootfs as MS_SLAVE: %s", strerror(errno));
+        return -1;
+    }
+
+mounted_slave:
+
+    // Create a staging tmpfs that is shared by our children; they will
+    // bind mount storage into their respective private namespaces, which
+    // are isolated from each other.
+    const char* target_base = getenv("EMULATED_STORAGE_TARGET");
+    if (target_base != NULL) {
+        if (mount("tmpfs", target_base, "tmpfs", MS_NOSUID | MS_NODEV,
+                "uid=0,gid=1028,mode=0050") == -1) {
+            SLOGE("Failed to mount tmpfs to %s: %s", target_base, strerror(errno));
+            return -1;
+        }
+    }
 
     return true;
 }
@@ -1487,14 +1749,14 @@ bool dvmInitAfterZygote()
      * come last.
      */
     if (!initJdwp()) {
-        LOGD("JDWP init failed; continuing anyway");
+        ALOGD("JDWP init failed; continuing anyway");
     }
 
 #ifndef LOG_NDEBUG
     endJdwp = dvmGetRelativeTimeUsec();
 #endif
 
-    LOGV("thread-start heap=%d quit=%d jdwp=%d total=%d usec",
+    ALOGV("thread-start heap=%d quit=%d jdwp=%d total=%d usec",
         (int)(endHeap-startHeap), (int)(endQuit-startQuit),
         (int)(endJdwp-startJdwp), (int)(endJdwp-startHeap));
 
@@ -1541,7 +1803,7 @@ static bool initJdwp()
 
         if (gDvm.jdwpHost != NULL) {
             if (strlen(gDvm.jdwpHost) >= sizeof(params.host)-1) {
-                LOGE("ERROR: hostname too long: '%s'", gDvm.jdwpHost);
+                ALOGE("ERROR: hostname too long: '%s'", gDvm.jdwpHost);
                 return false;
             }
             strcpy(params.host, gDvm.jdwpHost);
@@ -1555,7 +1817,7 @@ static bool initJdwp()
 
         gDvm.jdwpState = dvmJdwpStartup(&params);
         if (gDvm.jdwpState == NULL) {
-            LOGW("WARNING: debugger thread failed to initialize");
+            ALOGW("WARNING: debugger thread failed to initialize");
             /* TODO: ignore? fail? need to mimic "expected" behavior */
         }
     }
@@ -1567,7 +1829,7 @@ static bool initJdwp()
     if (dvmJdwpIsActive(gDvm.jdwpState)) {
         //dvmChangeStatus(NULL, THREAD_RUNNING);
         if (!dvmJdwpPostVMStart(gDvm.jdwpState, gDvm.jdwpSuspend)) {
-            LOGW("WARNING: failed to post 'start' message to debugger");
+            ALOGW("WARNING: failed to post 'start' message to debugger");
             /* keep going */
         }
         //dvmChangeStatus(NULL, THREAD_NATIVE);
@@ -1667,7 +1929,7 @@ fail:
  */
 void dvmShutdown()
 {
-    LOGV("VM shutting down");
+    ALOGV("VM shutting down");
 
     if (CALC_CACHE_STATS)
         dvmDumpAtomicCacheStats(gDvm.instanceofCache);
@@ -1707,7 +1969,7 @@ void dvmShutdown()
     dvmSlayDaemons();
 
     if (gDvm.verboseShutdown)
-        LOGD("VM cleaning up");
+        ALOGD("VM cleaning up");
 
     dvmDebuggerShutdown();
     dvmProfilingShutdown();
@@ -1732,6 +1994,8 @@ void dvmShutdown()
     delete gDvm.properties;
 
     freeAssertionCtrl();
+
+    dvmQuasiAtomicsShutdown();
 
     /*
      * We want valgrind to report anything we forget to free as "definitely
@@ -1783,13 +2047,13 @@ void dvmPrintNativeBackTrace()
      */
     char** strings = backtrace_symbols(stackFrames, frameCount);
     if (strings == NULL) {
-        LOGE("backtrace_symbols failed: %s", strerror(errno));
+        ALOGE("backtrace_symbols failed: %s", strerror(errno));
         return;
     }
 
     size_t i;
     for (i = 0; i < frameCount; ++i) {
-        LOGW("#%-2d %s", i, strings[i]);
+        ALOGW("#%-2d %s", i, strings[i]);
     }
     free(strings);
 }
@@ -1842,7 +2106,7 @@ void dvmAbort()
         result += messageBuffer[i];
     }
 
-    LOGE("VM aborting");
+    ALOGE("VM aborting");
 
     fflush(NULL);       // flush all open file buffers
 

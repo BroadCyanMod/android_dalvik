@@ -93,7 +93,7 @@ IndirectRef IndirectRefTable::add(u4 cookie, Object* obj)
         if (topIndex == alloc_entries_) {
             /* reached end of allocated space; did we hit buffer max? */
             if (topIndex == max_entries_) {
-                LOGE("JNI ERROR (app bug): %s reference table overflow (max=%d)",
+                ALOGE("JNI ERROR (app bug): %s reference table overflow (max=%d)",
                         indirectRefKindToString(kind_), max_entries_);
                 return NULL;
             }
@@ -107,7 +107,7 @@ IndirectRef IndirectRefTable::add(u4 cookie, Object* obj)
             IndirectRefSlot* newTable =
                     (IndirectRefSlot*) realloc(table_, newSize * sizeof(IndirectRefSlot));
             if (table_ == NULL) {
-                LOGE("JNI ERROR (app bug): unable to expand %s reference table "
+                ALOGE("JNI ERROR (app bug): unable to expand %s reference table "
                         "(from %d to %d, max=%d)",
                         indirectRefKindToString(kind_),
                         alloc_entries_, newSize, max_entries_);
@@ -141,11 +141,11 @@ Object* IndirectRefTable::get(IndirectRef iref) const {
     IndirectRefKind kind = indirectRefKind(iref);
     if (kind != kind_) {
         if (iref == NULL) {
-            LOGW("Attempt to look up NULL %s reference", indirectRefKindToString(kind_));
+            ALOGW("Attempt to look up NULL %s reference", indirectRefKindToString(kind_));
             return kInvalidIndirectRefObject;
         }
         if (kind == kIndirectKindInvalid) {
-            LOGE("JNI ERROR (app bug): invalid %s reference %p",
+            ALOGE("JNI ERROR (app bug): invalid %s reference %p",
                     indirectRefKindToString(kind_), iref);
             abortMaybe();
             return kInvalidIndirectRefObject;
@@ -158,7 +158,7 @@ Object* IndirectRefTable::get(IndirectRef iref) const {
     u4 index = extractIndex(iref);
     if (index >= topIndex) {
         /* bad -- stale reference? */
-        LOGE("JNI ERROR (app bug): accessed stale %s reference %p (index %d in a table of size %d)",
+        ALOGE("JNI ERROR (app bug): accessed stale %s reference %p (index %d in a table of size %d)",
                 indirectRefKindToString(kind_), iref, index, topIndex);
         abortMaybe();
         return kInvalidIndirectRefObject;
@@ -166,7 +166,7 @@ Object* IndirectRefTable::get(IndirectRef iref) const {
 
     Object* obj = table_[index].obj;
     if (obj == NULL) {
-        LOGI("JNI ERROR (app bug): accessed deleted %s reference %p",
+        ALOGI("JNI ERROR (app bug): accessed deleted %s reference %p",
                 indirectRefKindToString(kind_), iref);
         abortMaybe();
         return kInvalidIndirectRefObject;
@@ -174,7 +174,7 @@ Object* IndirectRefTable::get(IndirectRef iref) const {
 
     u4 serial = extractSerial(iref);
     if (serial != table_[index].serial) {
-        LOGE("JNI ERROR (app bug): attempt to use stale %s reference %p",
+        ALOGE("JNI ERROR (app bug): attempt to use stale %s reference %p",
                 indirectRefKindToString(kind_), iref);
         abortMaybe();
         return kInvalidIndirectRefObject;
@@ -227,24 +227,24 @@ bool IndirectRefTable::remove(u4 cookie, IndirectRef iref)
         index = extractIndex(iref);
         if (index < bottomIndex) {
             /* wrong segment */
-            LOGV("Attempt to remove index outside index area (%ud vs %ud-%ud)",
+            ALOGV("Attempt to remove index outside index area (%ud vs %ud-%ud)",
                     index, bottomIndex, topIndex);
             return false;
         }
         if (index >= topIndex) {
             /* bad -- stale reference? */
-            LOGD("Attempt to remove invalid index %ud (bottom=%ud top=%ud)",
+            ALOGD("Attempt to remove invalid index %ud (bottom=%ud top=%ud)",
                     index, bottomIndex, topIndex);
             return false;
         }
         if (table_[index].obj == NULL) {
-            LOGD("Attempt to remove cleared %s reference %p",
+            ALOGD("Attempt to remove cleared %s reference %p",
                     indirectRefKindToString(kind_), iref);
             return false;
         }
         u4 serial = extractSerial(iref);
         if (table_[index].serial != serial) {
-            LOGD("Attempt to remove stale %s reference %p",
+            ALOGD("Attempt to remove stale %s reference %p",
                     indirectRefKindToString(kind_), iref);
             return false;
         }
@@ -252,7 +252,7 @@ bool IndirectRefTable::remove(u4 cookie, IndirectRef iref)
         // reference looks like a pointer, scan the table to find the index
         int i = findObject(reinterpret_cast<Object*>(iref), bottomIndex, topIndex, table_);
         if (i < 0) {
-            LOGW("trying to work around app JNI bugs, but didn't find %p in table!", iref);
+            ALOGW("trying to work around app JNI bugs, but didn't find %p in table!", iref);
             return false;
         }
         index = i;
@@ -266,19 +266,19 @@ bool IndirectRefTable::remove(u4 cookie, IndirectRef iref)
         int numHoles = segmentState.parts.numHoles - prevState.parts.numHoles;
         if (numHoles != 0) {
             while (--topIndex > bottomIndex && numHoles != 0) {
-                LOGV("+++ checking for hole at %d (cookie=0x%08x) val=%p",
+                ALOGV("+++ checking for hole at %d (cookie=0x%08x) val=%p",
                     topIndex-1, cookie, table_[topIndex-1].obj);
                 if (table_[topIndex-1].obj != NULL) {
                     break;
                 }
-                LOGV("+++ ate hole at %d", topIndex-1);
+                ALOGV("+++ ate hole at %d", topIndex-1);
                 numHoles--;
             }
             segmentState.parts.numHoles = numHoles + prevState.parts.numHoles;
             segmentState.parts.topIndex = topIndex;
         } else {
             segmentState.parts.topIndex = topIndex-1;
-            LOGV("+++ ate last entry %d", topIndex-1);
+            ALOGV("+++ ate last entry %d", topIndex-1);
         }
     } else {
         /*
@@ -288,7 +288,7 @@ bool IndirectRefTable::remove(u4 cookie, IndirectRef iref)
          */
         table_[index].obj = NULL;
         segmentState.parts.numHoles++;
-        LOGV("+++ left hole at %d, holes=%d", index, segmentState.parts.numHoles);
+        ALOGV("+++ left hole at %d, holes=%d", index, segmentState.parts.numHoles);
     }
 
     return true;

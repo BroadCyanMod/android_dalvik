@@ -41,7 +41,7 @@ bool dvmCheckAsmConstants()
 #include "mterp/common/asm-constants.h"
 
     if (failed) {
-        LOGE("Please correct the values in mterp/common/asm-constants.h");
+        ALOGE("Please correct the values in mterp/common/asm-constants.h");
         dvmAbort();
     }
 
@@ -52,12 +52,16 @@ bool dvmCheckAsmConstants()
      * which one did, but if any one is too big the total size will
      * overflow.
      */
+#if defined(__mips__)
+    const int width = 128;
+#else
     const int width = 64;
+#endif
     int interpSize = (uintptr_t) dvmAsmInstructionEnd -
                      (uintptr_t) dvmAsmInstructionStart;
     if (interpSize != 0 && interpSize != kNumPackedOpcodes*width) {
-        LOGE("ERROR: unexpected asm interp size %d", interpSize);
-        LOGE("(did an instruction handler exceed %d bytes?)", width);
+        ALOGE("ERROR: unexpected asm interp size %d", interpSize);
+        ALOGE("(did an instruction handler exceed %d bytes?)", width);
         dvmAbort();
     }
 #endif
@@ -86,9 +90,9 @@ void dvmMterpStd(Thread* self)
             desc);
         free(desc);
     }
-    //LOGI("self is %p, pc=%p, fp=%p", self, self->interpSave.pc,
+    //ALOGI("self is %p, pc=%p, fp=%p", self, self->interpSave.pc,
     //      self->interpSave.curFrame);
-    //LOGI("first instruction is 0x%04x", self->interpSave.pc[0]);
+    //ALOGI("first instruction is 0x%04x", self->interpSave.pc[0]);
 
     /*
      * Handle any ongoing profiling and prep for debugging
@@ -101,6 +105,6 @@ void dvmMterpStd(Thread* self)
     dvmMterpStdRun(self);
 
 #ifdef LOG_INSTR
-    LOGD("|-- Leaving interpreter loop");
+    ALOGD("|-- Leaving interpreter loop");
 #endif
 }

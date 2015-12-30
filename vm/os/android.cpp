@@ -48,7 +48,7 @@ static const int kNiceValues[10] = {
 void os_changeThreadPriority(Thread* thread, int newPriority)
 {
     if (newPriority < 1 || newPriority > 10) {
-        LOGW("bad priority %d", newPriority);
+        ALOGW("bad priority %d", newPriority);
         newPriority = 5;
     }
 
@@ -63,10 +63,10 @@ void os_changeThreadPriority(Thread* thread, int newPriority)
 
     if (setpriority(PRIO_PROCESS, pid, newNice) != 0) {
         std::string threadName(dvmGetThreadName(thread));
-        LOGI("setPriority(%d) '%s' to prio=%d(n=%d) failed: %s",
+        ALOGI("setPriority(%d) '%s' to prio=%d(n=%d) failed: %s",
         pid, threadName.c_str(), newPriority, newNice, strerror(errno));
     } else {
-        LOGV("setPriority(%d) to prio=%d(n=%d)", pid, newPriority, newNice);
+        ALOGV("setPriority(%d) to prio=%d(n=%d)", pid, newPriority, newNice);
     }
 }
 
@@ -75,7 +75,7 @@ int os_getThreadPriorityFromSystem()
     errno = 0;
     int sysprio = getpriority(PRIO_PROCESS, 0);
     if (sysprio == -1 && errno != 0) {
-        LOGW("getpriority() failed: %s", strerror(errno));
+        ALOGW("getpriority() failed: %s", strerror(errno));
         return THREAD_NORM_PRIORITY;
     }
 
@@ -101,7 +101,7 @@ int os_raiseThreadPriority()
     errno = 0;
     int oldThreadPriority = getpriority(PRIO_PROCESS, 0);
     if (errno != 0) {
-        LOGI("getpriority(self) failed: %s", strerror(errno));
+        ALOGI("getpriority(self) failed: %s", strerror(errno));
     } else if (oldThreadPriority > ANDROID_PRIORITY_NORMAL) {
         /* Current value is numerically greater than "normal", which
          * in backward UNIX terms means lower priority.
@@ -110,14 +110,14 @@ int os_raiseThreadPriority()
             set_sched_policy(dvmGetSysThreadId(), SP_FOREGROUND);
         }
         if (setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_NORMAL) != 0) {
-            LOGI("Unable to elevate priority from %d to %d",
+            ALOGI("Unable to elevate priority from %d to %d",
                     oldThreadPriority, ANDROID_PRIORITY_NORMAL);
         } else {
             /*
              * The priority has been elevated.  Return the old value
              * so the caller can restore it later.
              */
-            LOGV("Elevating priority from %d to %d",
+            ALOGV("Elevating priority from %d to %d",
                     oldThreadPriority, ANDROID_PRIORITY_NORMAL);
             return oldThreadPriority;
         }
@@ -128,10 +128,10 @@ int os_raiseThreadPriority()
 void os_lowerThreadPriority(int oldThreadPriority)
 {
     if (setpriority(PRIO_PROCESS, 0, oldThreadPriority) != 0) {
-        LOGW("Unable to reset priority to %d: %s",
+        ALOGW("Unable to reset priority to %d: %s",
                 oldThreadPriority, strerror(errno));
     } else {
-        LOGV("Reset priority to %d", oldThreadPriority);
+        ALOGV("Reset priority to %d", oldThreadPriority);
     }
     if (oldThreadPriority >= ANDROID_PRIORITY_BACKGROUND) {
         set_sched_policy(dvmGetSysThreadId(), SP_BACKGROUND);
