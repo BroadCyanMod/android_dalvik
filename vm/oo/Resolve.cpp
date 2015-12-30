@@ -125,13 +125,13 @@ ClassObject* dvmResolveClass(const ClassObject* referrer, u4 classIdx,
             if (referrer->pDvmDex != resClassCheck->pDvmDex &&
                 resClassCheck->classLoader != NULL)
             {
-                ALOGW("Class resolved by unexpected DEX:"
+                LOGW("Class resolved by unexpected DEX:"
                      " %s(%p):%p ref [%s] %s(%p):%p",
                     referrer->descriptor, referrer->classLoader,
                     referrer->pDvmDex,
                     resClass->descriptor, resClassCheck->descriptor,
                     resClassCheck->classLoader, resClassCheck->pDvmDex);
-                ALOGW("(%s had used a different %s during pre-verification)",
+                LOGW("(%s had used a different %s during pre-verification)",
                     referrer->descriptor, resClass->descriptor);
                 dvmThrowIllegalAccessError(
                     "Class ref in pre-verified class resolved to unexpected "
@@ -219,11 +219,7 @@ Method* dvmResolveMethod(const ClassObject* referrer, u4 methodIdx,
     }
 
     if (resMethod == NULL) {
-        std::string msg;
-        msg += resClass->descriptor;
-        msg += ".";
-        msg += name;
-        dvmThrowNoSuchMethodError(msg.c_str());
+        dvmThrowNoSuchMethodError(name);
         return NULL;
     }
 
@@ -337,14 +333,11 @@ Method* dvmResolveInterfaceMethod(const ClassObject* referrer, u4 methodIdx)
     DexProto proto;
     dexProtoSetFromMethodId(&proto, pDvmDex->pDexFile, pMethodId);
 
-    LOGVV("+++ looking for '%s' in resClass='%s'", methodName, resClass->descriptor);
+    LOGVV("+++ looking for '%s' '%s' in resClass='%s'",
+        methodName, methodSig, resClass->descriptor);
     resMethod = dvmFindInterfaceMethodHier(resClass, methodName, &proto);
     if (resMethod == NULL) {
-        std::string msg;
-        msg += resClass->descriptor;
-        msg += ".";
-        msg += methodName;
-        dvmThrowNoSuchMethodError(msg.c_str());
+        dvmThrowNoSuchMethodError(methodName);
         return NULL;
     }
 

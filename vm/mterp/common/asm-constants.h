@@ -12,19 +12,19 @@
    */
 # define MTERP_OFFSET(_name, _type, _field, _offset)                        \
     if (OFFSETOF_MEMBER(_type, _field) != _offset) {                        \
-        ALOGE("Bad asm offset %s (%d), should be %d",                        \
+        LOGE("Bad asm offset %s (%d), should be %d",                        \
             #_name, _offset, OFFSETOF_MEMBER(_type, _field));               \
         failed = true;                                                      \
     }
 # define MTERP_SIZEOF(_name, _type, _size)                                  \
     if (sizeof(_type) != (_size)) {                                         \
-        ALOGE("Bad asm sizeof %s (%d), should be %d",                        \
+        LOGE("Bad asm sizeof %s (%d), should be %d",                        \
             #_name, (_size), sizeof(_type));                                \
         failed = true;                                                      \
     }
 # define MTERP_CONSTANT(_name, _value)                                      \
     if ((_name) != (_value)) {                                              \
-        ALOGE("Bad asm constant %s (%d), should be %d",                      \
+        LOGE("Bad asm constant %s (%d), should be %d",                      \
             #_name, (_value), (_name));                                     \
         failed = true;                                                      \
     }
@@ -40,7 +40,7 @@
  * data structures.  Some versions of gcc will hold small enumerated types
  * in a char instead of an int.
  */
-#if defined(__ARM_EABI__) || defined(__mips__)
+#if defined(__ARM_EABI__)
 # define MTERP_NO_UNALIGN_64
 #endif
 #if defined(HAVE_SHORT_ENUMS)
@@ -152,11 +152,7 @@ MTERP_OFFSET(offThread_method,            Thread, interpSave.method, 8)
 MTERP_OFFSET(offThread_methodClassDex,    Thread, interpSave.methodClassDex, 12)
 /* make sure all JValue union members are stored at the same offset */
 MTERP_OFFSET(offThread_retval,            Thread, interpSave.retval, 16)
-#ifdef HAVE_BIG_ENDIAN
-MTERP_OFFSET(offThread_retval_z,          Thread, interpSave.retval.z, 19)
-#else
 MTERP_OFFSET(offThread_retval_z,          Thread, interpSave.retval.z, 16)
-#endif
 MTERP_OFFSET(offThread_retval_i,          Thread, interpSave.retval.i, 16)
 MTERP_OFFSET(offThread_retval_j,          Thread, interpSave.retval.j, 16)
 MTERP_OFFSET(offThread_retval_l,          Thread, interpSave.retval.l, 16)
@@ -211,8 +207,6 @@ MTERP_OFFSET(offObject_lock,            Object, lock, 4)
 /* Lock shape */
 MTERP_CONSTANT(LW_LOCK_OWNER_SHIFT, 3)
 MTERP_CONSTANT(LW_HASH_STATE_SHIFT, 1)
-MTERP_CONSTANT(LW_HASH_STATE_SIZE,  2)
-MTERP_CONSTANT(LW_HASH_STATE_ABS_MASK, 0x6)
 
 /* ArrayObject fields */
 MTERP_OFFSET(offArrayObject_length,     ArrayObject, length, 8)
@@ -302,6 +296,7 @@ MTERP_CONSTANT(GC_CARD_SHIFT, 7)
 /* opcode number */
 MTERP_CONSTANT(OP_MOVE_EXCEPTION,   0x0d)
 MTERP_CONSTANT(OP_INVOKE_DIRECT_RANGE, 0x76)
+MTERP_CONSTANT(OP_INVOKE_DIRECT_JUMBO, 0x124)
 
 /* flags for interpBreak */
 MTERP_CONSTANT(kSubModeNormal,          0x0000)
@@ -322,9 +317,3 @@ MTERP_CONSTANT(kInterpSafePoint,          0x02)
 
 MTERP_CONSTANT(DBG_METHOD_ENTRY,          0x04)
 MTERP_CONSTANT(DBG_METHOD_EXIT,           0x08)
-
-#if defined(__thumb__)
-# define PCREL_REF(sym,label) sym-(label+4)
-#else
-# define PCREL_REF(sym,label) sym-(label+8)
-#endif

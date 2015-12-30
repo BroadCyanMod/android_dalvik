@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#if 0
-
 /*
  * Rebuild the interpreter frame then punt to the interpreter to execute
  * instruction at specified PC.
@@ -154,14 +152,14 @@ static bool handleMethodFmt12x(CompilationUnit *cUnit, MIR *mir)
     return handleFmt12x(cUnit, mir);
 }
 
-static bool handleMethodFmt20bc(CompilationUnit *cUnit, MIR *mir)
+static bool handleMethodFmt20bc_Fmt40sc(CompilationUnit *cUnit, MIR *mir)
 {
-    return handleFmt20bc(cUnit, mir);
+    return handleFmt20bc_Fmt40sc(cUnit, mir);
 }
 
-static bool handleMethodFmt21c_Fmt31c(CompilationUnit *cUnit, MIR *mir)
+static bool handleMethodFmt21c_Fmt31c_Fmt41c(CompilationUnit *cUnit, MIR *mir)
 {
-    return handleFmt21c_Fmt31c(cUnit, mir);
+    return handleFmt21c_Fmt31c_Fmt41c(cUnit, mir);
 }
 
 static bool handleMethodFmt21h(CompilationUnit *cUnit, MIR *mir)
@@ -185,9 +183,9 @@ static bool handleMethodFmt22b_Fmt22s(CompilationUnit *cUnit, MIR *mir)
     return handleFmt22b_Fmt22s(cUnit, mir);
 }
 
-static bool handleMethodFmt22c(CompilationUnit *cUnit, MIR *mir)
+static bool handleMethodFmt22c_Fmt52c(CompilationUnit *cUnit, MIR *mir)
 {
-    return handleFmt22c(cUnit, mir);
+    return handleFmt22c_Fmt52c(cUnit, mir);
 }
 
 static bool handleMethodFmt22cs(CompilationUnit *cUnit, MIR *mir)
@@ -216,10 +214,10 @@ static bool handleMethodFmt31t(CompilationUnit *cUnit, MIR *mir)
     return handleFmt31t(cUnit, mir);
 }
 
-static bool handleMethodFmt35c_3rc(CompilationUnit *cUnit, MIR *mir,
+static bool handleMethodFmt35c_3rc_5rc(CompilationUnit *cUnit, MIR *mir,
                                        BasicBlock *bb, ArmLIR *labelList)
 {
-    return handleFmt35c_3rc(cUnit, mir, bb, labelList);
+    return handleFmt35c_3rc_5rc(cUnit, mir, bb, labelList);
 }
 
 static bool handleMethodFmt35ms_3rms(CompilationUnit *cUnit, MIR *mir,
@@ -332,11 +330,13 @@ static bool methodBlockCodeGen(CompilationUnit *cUnit, BasicBlock *bb)
                 notHandled = handleMethodFmt12x(cUnit, mir);
                 break;
             case kFmt20bc:
-                notHandled = handleMethodFmt20bc(cUnit, mir);
+            case kFmt40sc:
+                notHandled = handleMethodFmt20bc_Fmt40sc(cUnit, mir);
                 break;
             case kFmt21c:
             case kFmt31c:
-                notHandled = handleMethodFmt21c_Fmt31c(cUnit, mir);
+            case kFmt41c:
+                notHandled = handleMethodFmt21c_Fmt31c_Fmt41c(cUnit, mir);
                 break;
             case kFmt21h:
                 notHandled = handleMethodFmt21h(cUnit, mir);
@@ -352,7 +352,8 @@ static bool methodBlockCodeGen(CompilationUnit *cUnit, BasicBlock *bb)
                 notHandled = handleMethodFmt22b_Fmt22s(cUnit, mir);
                 break;
             case kFmt22c:
-                notHandled = handleMethodFmt22c(cUnit, mir);
+            case kFmt52c:
+                notHandled = handleMethodFmt22c_Fmt52c(cUnit, mir);
                 break;
             case kFmt22cs:
                 notHandled = handleMethodFmt22cs(cUnit, mir);
@@ -372,7 +373,9 @@ static bool methodBlockCodeGen(CompilationUnit *cUnit, BasicBlock *bb)
                 break;
             case kFmt3rc:
             case kFmt35c:
-                notHandled = handleMethodFmt35c_3rc(cUnit, mir, bb, labelList);
+            case kFmt5rc:
+                notHandled = handleMethodFmt35c_3rc_5rc(cUnit, mir, bb,
+                                                        labelList);
                 break;
             case kFmt3rms:
             case kFmt35ms:
@@ -397,7 +400,7 @@ static bool methodBlockCodeGen(CompilationUnit *cUnit, BasicBlock *bb)
         }
 
         if (notHandled) {
-            ALOGE("%#06x: Opcode %#x (%s) / Fmt %d not handled",
+            LOGE("%#06x: Opcode %#x (%s) / Fmt %d not handled",
                  mir->offset,
                  dalvikOpcode, dexGetOpcodeName(dalvikOpcode),
                  dalvikFormat);
@@ -447,11 +450,3 @@ void dvmCompilerMethodMIR2LIR(CompilationUnit *cUnit)
     selfVerificationBranchInsertPass(cUnit);
 #endif
 }
-
-#else
-
-void dvmCompilerMethodMIR2LIR(CompilationUnit *cUnit) {
-    // Method-based JIT not supported for ARM.
-}
-
-#endif

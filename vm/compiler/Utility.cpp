@@ -27,7 +27,7 @@ bool dvmCompilerHeapInit(void)
     arenaHead =
         (ArenaMemBlock *) malloc(sizeof(ArenaMemBlock) + ARENA_DEFAULT_SIZE);
     if (arenaHead == NULL) {
-        ALOGE("No memory left to create compiler heap memory");
+        LOGE("No memory left to create compiler heap memory");
         return false;
     }
     arenaHead->blockSize = ARENA_DEFAULT_SIZE;
@@ -69,7 +69,7 @@ retry:
         ArenaMemBlock *newArena = (ArenaMemBlock *)
             malloc(sizeof(ArenaMemBlock) + blockSize);
         if (newArena == NULL) {
-            ALOGE("Arena allocation failure");
+            LOGE("Arena allocation failure");
             dvmAbort();
         }
         newArena->blockSize = blockSize;
@@ -79,7 +79,7 @@ retry:
         currentArena = newArena;
         numArenaBlocks++;
         if (numArenaBlocks > 10)
-            ALOGI("Total arena pages for JIT: %d", numArenaBlocks);
+            LOGI("Total arena pages for JIT: %d", numArenaBlocks);
         goto retry;
     }
     /* Should not reach here */
@@ -172,10 +172,10 @@ void dvmCompilerDumpCompilationUnit(CompilationUnit *cUnit)
         "Exception Handling",
     };
 
-    ALOGD("Compiling %s %s", cUnit->method->clazz->descriptor,
+    LOGD("Compiling %s %s", cUnit->method->clazz->descriptor,
          cUnit->method->name);
-    ALOGD("%d insns", dvmGetMethodInsnsSize(cUnit->method));
-    ALOGD("%d blocks in total", cUnit->numBlocks);
+    LOGD("%d insns", dvmGetMethodInsnsSize(cUnit->method));
+    LOGD("%d blocks in total", cUnit->numBlocks);
     GrowableListIterator iterator;
 
     dvmGrowableListIteratorInit(&cUnit->blockList, &iterator);
@@ -183,18 +183,18 @@ void dvmCompilerDumpCompilationUnit(CompilationUnit *cUnit)
     while (true) {
         bb = (BasicBlock *) dvmGrowableListIteratorNext(&iterator);
         if (bb == NULL) break;
-        ALOGD("Block %d (%s) (insn %04x - %04x%s)",
+        LOGD("Block %d (%s) (insn %04x - %04x%s)",
              bb->id,
              blockTypeNames[bb->blockType],
              bb->startOffset,
              bb->lastMIRInsn ? bb->lastMIRInsn->offset : bb->startOffset,
              bb->lastMIRInsn ? "" : " empty");
         if (bb->taken) {
-            ALOGD("  Taken branch: block %d (%04x)",
+            LOGD("  Taken branch: block %d (%04x)",
                  bb->taken->id, bb->taken->startOffset);
         }
         if (bb->fallThrough) {
-            ALOGD("  Fallthrough : block %d (%04x)",
+            LOGD("  Fallthrough : block %d (%04x)",
                  bb->fallThrough->id, bb->fallThrough->startOffset);
         }
     }
@@ -220,7 +220,7 @@ static int dumpMethodStats(void *compilerMethodStats, void *totalMethodStats)
 
     /* If over 3/4 of the Dalvik code is compiled, print something */
     if (methodStats->compiledDalvikSize >= limit) {
-        ALOGD("Method stats: %s%s, %d/%d (compiled/total Dalvik), %d (native)",
+        LOGD("Method stats: %s%s, %d/%d (compiled/total Dalvik), %d (native)",
              methodStats->method->clazz->descriptor,
              methodStats->method->name,
              methodStats->compiledDalvikSize,
@@ -240,20 +240,20 @@ void dvmCompilerDumpStats(void)
     CompilerMethodStats totalMethodStats;
 
     memset(&totalMethodStats, 0, sizeof(CompilerMethodStats));
-    ALOGD("%d compilations using %d + %d bytes",
+    LOGD("%d compilations using %d + %d bytes",
          gDvmJit.numCompilations,
          gDvmJit.templateSize,
          gDvmJit.codeCacheByteUsed - gDvmJit.templateSize);
-    ALOGD("Compiler arena uses %d blocks (%d bytes each)",
+    LOGD("Compiler arena uses %d blocks (%d bytes each)",
          numArenaBlocks, ARENA_DEFAULT_SIZE);
-    ALOGD("Compiler work queue length is %d/%d", gDvmJit.compilerQueueLength,
+    LOGD("Compiler work queue length is %d/%d", gDvmJit.compilerQueueLength,
          gDvmJit.compilerMaxQueued);
     dvmJitStats();
     dvmCompilerArchDump();
     if (gDvmJit.methodStatsTable) {
         dvmHashForeach(gDvmJit.methodStatsTable, dumpMethodStats,
                        &totalMethodStats);
-        ALOGD("Code size stats: %d/%d (compiled/total Dalvik), %d (native)",
+        LOGD("Code size stats: %d/%d (compiled/total Dalvik), %d (native)",
              totalMethodStats.compiledDalvikSize,
              totalMethodStats.dalvikSize,
              totalMethodStats.nativeSize);
@@ -326,7 +326,7 @@ bool dvmCompilerSetBit(BitVector *pBits, unsigned int num)
 bool dvmCompilerClearBit(BitVector *pBits, unsigned int num)
 {
     if (num >= pBits->storageSize * sizeof(u4) * 8) {
-        ALOGE("Trying to clear a bit that is not set in the vector yet!");
+        LOGE("Trying to clear a bit that is not set in the vector yet!");
         dvmAbort();
     }
 
@@ -347,17 +347,17 @@ void dvmDebugBitVector(char *msg, const BitVector *bv, int length)
 {
     int i;
 
-    ALOGE("%s", msg);
+    LOGE("%s", msg);
     for (i = 0; i < length; i++) {
         if (dvmIsBitSet(bv, i)) {
-            ALOGE("    Bit %d is set", i);
+            LOGE("    Bit %d is set", i);
         }
     }
 }
 
 void dvmCompilerAbort(CompilationUnit *cUnit)
 {
-    ALOGE("Jit: aborting trace compilation, reverting to interpreter");
+    LOGE("Jit: aborting trace compilation, reverting to interpreter");
     /* Force a traceback in debug builds */
     assert(0);
     /*
@@ -372,14 +372,14 @@ void dvmDumpBlockBitVector(const GrowableList *blocks, char *msg,
 {
     int i;
 
-    ALOGE("%s", msg);
+    LOGE("%s", msg);
     for (i = 0; i < length; i++) {
         if (dvmIsBitSet(bv, i)) {
             BasicBlock *bb =
                 (BasicBlock *) dvmGrowableListGetElement(blocks, i);
             char blockName[BLOCK_NAME_LEN];
             dvmGetBlockName(bb, blockName);
-            ALOGE("Bit %d / %s is set", i, blockName);
+            LOGE("Bit %d / %s is set", i, blockName);
         }
     }
 }

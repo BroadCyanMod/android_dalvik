@@ -47,7 +47,7 @@
 
     .global dvmCompilerTemplateStart
     .type   dvmCompilerTemplateStart, %function
-    .section .data.rel.ro
+    .text
 
 dvmCompilerTemplateStart:
 
@@ -103,7 +103,7 @@ dvmCompiler_TEMPLATE_INTERPRET:
  * ===========================================================================
  */
 
-    .section .data.rel.ro
+    .text
     .align  4
 
     .global dmvCompilerTemplateEnd

@@ -25,13 +25,6 @@
 #define DALVIK_INTERP_STATE_H_
 
 /*
- * For x86 JIT. In the lowered code sequences for bytecodes, at most 10
- * temporary variables may be live at the same time. Therefore, at most
- * 10 temporary variables can be spilled at the same time.
-*/
-#define MAX_SPILL_JIT_IA 10
-
-/*
  * Execution mode, e.g. interpreter vs. JIT.
  */
 enum ExecutionMode {
@@ -40,10 +33,6 @@ enum ExecutionMode {
     kExecutionModeInterpFast,
 #if defined(WITH_JIT)
     kExecutionModeJit,
-#endif
-#if defined(WITH_JIT)  /* IA only */
-    kExecutionModeNcgO0,
-    kExecutionModeNcgO1,
 #endif
 };
 
@@ -243,15 +232,6 @@ struct JitTraceRun {
     u4 unused:31;
 };
 
-#if defined(ARCH_IA32)
-/*
- * JIT code genarator optimization level
- */
-enum JitOptLevel {
-    kJitOptLevelO0 = 0,
-    kJitOptLevelO1 = 1,
-};
-#endif  // #if defined(ARCH_IA32)
 #endif
 
 #endif  // DALVIK_INTERP_STATE_H_

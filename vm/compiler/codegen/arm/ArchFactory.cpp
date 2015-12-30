@@ -40,7 +40,7 @@ static TGT_LIR *genRegImmCheck(CompilationUnit *cUnit,
             branch->generic.target = (LIR *) exceptionLabel;
             return exceptionLabel;
         } else {
-            ALOGE("Catch blocks not handled yet");
+            LOGE("Catch blocks not handled yet");
             dvmAbort();
             return NULL;
         }
@@ -61,7 +61,7 @@ static TGT_LIR *genNullCheck(CompilationUnit *cUnit, int sReg, int mReg,
     if (dvmIsBitSet(cUnit->regPool->nullCheckedRegs, sReg)) {
         return pcrLabel;
     }
-    dvmCompilerSetBit(cUnit->regPool->nullCheckedRegs, sReg);
+    dvmSetBit(cUnit->regPool->nullCheckedRegs, sReg);
     return genRegImmCheck(cUnit, kArmCondEq, mReg, 0, dOffset, pcrLabel);
 }
 

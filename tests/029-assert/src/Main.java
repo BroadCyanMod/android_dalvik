@@ -12,8 +12,5 @@ public class Main {
         } catch (AssertionError ae) {
             System.out.println("caught expected assert exception");
         }
-
-        // exercise this code path
-        ClassLoader.getSystemClassLoader().setDefaultAssertionStatus(true);
     }
 }

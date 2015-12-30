@@ -55,16 +55,16 @@ bool dvmStdioConverterStartup()
     pthread_cond_init(&gDvm.stdioConverterCond, NULL);
 
     if (pipe(gDvm.stdoutPipe) != 0) {
-        ALOGW("pipe failed: %s", strerror(errno));
+        LOGW("pipe failed: %s", strerror(errno));
         return false;
     }
     if (pipe(gDvm.stderrPipe) != 0) {
-        ALOGW("pipe failed: %s", strerror(errno));
+        LOGW("pipe failed: %s", strerror(errno));
         return false;
     }
 
     if (dup2(gDvm.stdoutPipe[1], kFilenoStdout) != kFilenoStdout) {
-        ALOGW("dup2(1) failed: %s", strerror(errno));
+        LOGW("dup2(1) failed: %s", strerror(errno));
         return false;
     }
     close(gDvm.stdoutPipe[1]);
@@ -73,7 +73,7 @@ bool dvmStdioConverterStartup()
     /* don't redirect stderr on sim -- logs get written there! */
     /* (don't need this on the sim anyway) */
     if (dup2(gDvm.stderrPipe[1], kFilenoStderr) != kFilenoStderr) {
-        ALOGW("dup2(2) failed: %d %s", errno, strerror(errno));
+        LOGW("dup2(2) failed: %d %s", errno, strerror(errno));
         return false;
     }
     close(gDvm.stderrPipe[1]);
@@ -117,7 +117,7 @@ void dvmStdioConverterShutdown()
     printf("Shutting down\n");
     fflush(stdout);
 
-    ALOGD("Joining stdio converter...");
+    LOGD("Joining stdio converter...");
     pthread_join(gDvm.stdioConverterHandle, NULL);
 }
 
@@ -163,12 +163,12 @@ static void* stdioConverterThreadStart(void* arg)
 
         if (fdCount < 0) {
             if (errno != EINTR) {
-                ALOGE("select on stdout/stderr failed");
+                LOGE("select on stdout/stderr failed");
                 break;
             }
-            ALOGD("Got EINTR, ignoring");
+            LOGD("Got EINTR, ignoring");
         } else if (fdCount == 0) {
-            ALOGD("WEIRD: select returned zero");
+            LOGD("WEIRD: select returned zero");
         } else {
             bool err = false;
             if (FD_ISSET(gDvm.stdoutPipe[0], &readfds)) {
@@ -182,7 +182,7 @@ static void* stdioConverterThreadStart(void* arg)
 
             /* probably EOF; give up */
             if (err) {
-                ALOGW("stdio converter got read error; shutting it down");
+                LOGW("stdio converter got read error; shutting it down");
                 break;
             }
         }
@@ -196,6 +196,12 @@ static void* stdioConverterThreadStart(void* arg)
 
     /* change back for shutdown sequence */
     dvmChangeStatus(NULL, THREAD_RUNNING);
+#ifdef NDEBUG
+    // cc is used only in assert() statements -> not used in NDEBUG
+    // mode - causing variable defined but not used warning,
+    // breaking the build with -Werror
+    (void)cc;
+#endif
     return NULL;
 }
 
@@ -213,11 +219,11 @@ static bool readAndLog(int fd, BufferedData* data, const char* tag)
     want = kMaxLine - data->count;
     actual = read(fd, data->buf + data->count, want);
     if (actual <= 0) {
-        ALOGW("read %s: (%d,%d) failed (%d): %s",
+        LOGW("read %s: (%d,%d) failed (%d): %s",
             tag, fd, want, (int)actual, strerror(errno));
         return false;
     } else {
-        //ALOGI("read %s: %d at %d", tag, actual, data->count);
+        //LOGI("read %s: %d at %d", tag, actual, data->count);
     }
     data->count += actual;
 
@@ -231,8 +237,8 @@ static bool readAndLog(int fd, BufferedData* data, const char* tag)
     for (i = data->count; i > 0; i--, cp++) {
         if (*cp == '\n' || (*cp == '\r' && i != 0 && *(cp+1) != '\n')) {
             *cp = '\0';
-            //ALOGW("GOT %d at %d '%s'", cp - start, start - data->buf, start);
-            ALOG(LOG_INFO, tag, "%s", start);
+            //LOGW("GOT %d at %d '%s'", cp - start, start - data->buf, start);
+            LOG(LOG_INFO, tag, "%s", start);
             start = cp+1;
         }
     }
@@ -242,7 +248,7 @@ static bool readAndLog(int fd, BufferedData* data, const char* tag)
      */
     if (start == data->buf && data->count == kMaxLine) {
         data->buf[kMaxLine] = '\0';
-        ALOG(LOG_INFO, tag, "%s!", start);
+        LOG(LOG_INFO, tag, "%s!", start);
         start = cp + kMaxLine;
     }
 

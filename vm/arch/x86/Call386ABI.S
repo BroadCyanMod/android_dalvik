@@ -55,7 +55,6 @@ Float and double returned on top of FP stack.
 */
 
     .text
-    .align  4
     .global dvmPlatformInvoke
     .type   dvmPlatformInvoke, @function
 

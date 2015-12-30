@@ -9,11 +9,6 @@ public class Main {
 
     public static void main(String[] args) {
         Main instance = null;
-        try {
-            instance.doStuff();
-            throw new RuntimeException("fail");
-        } catch (NullPointerException npe) { }
-
-        System.out.println("done");
+        instance.doStuff();
     }
 }

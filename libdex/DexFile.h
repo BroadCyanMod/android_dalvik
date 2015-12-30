@@ -756,7 +756,7 @@ DEX_INLINE const DexTry* dexGetTries(const DexCode* pCode) {
     const u2* insnsEnd = &pCode->insns[pCode->insnsSize];
 
     // Round to four bytes.
-    if ((((uintptr_t) insnsEnd) & 3) != 0) {
+    if ((((u4) insnsEnd) & 3) != 0) {
         insnsEnd++;
     }
 
@@ -809,15 +809,14 @@ DEX_INLINE const u1* dexGetClassData(const DexFile* pDexFile,
 DEX_INLINE const DexAnnotationSetItem* dexGetAnnotationSetItem(
     const DexFile* pDexFile, u4 offset)
 {
-    if (offset == 0) {
-        return NULL;
-    }
     return (const DexAnnotationSetItem*) (pDexFile->baseAddr + offset);
 }
 /* get the class' annotation set */
 DEX_INLINE const DexAnnotationSetItem* dexGetClassAnnotationSet(
     const DexFile* pDexFile, const DexAnnotationsDirectoryItem* pAnnoDir)
 {
+    if (pAnnoDir->classAnnotationsOff == 0)
+        return NULL;
     return dexGetAnnotationSetItem(pDexFile, pAnnoDir->classAnnotationsOff);
 }
 
@@ -904,19 +903,16 @@ DEX_INLINE int dexGetParameterAnnotationsSize(const DexFile* pDexFile,
 DEX_INLINE const DexAnnotationSetRefList* dexGetParameterAnnotationSetRefList(
     const DexFile* pDexFile, const DexParameterAnnotationsItem* pItem)
 {
-    if (pItem->annotationsOff == 0) {
-        return NULL;
-    }
-    return (const DexAnnotationSetRefList*) (pDexFile->baseAddr + pItem->annotationsOff);
+    return (const DexAnnotationSetRefList*)
+        (pDexFile->baseAddr + pItem->annotationsOff);
 }
 
 /* get method annotation list size */
 DEX_INLINE int dexGetParameterAnnotationSetRefSize(const DexFile* pDexFile,
     const DexParameterAnnotationsItem* pItem)
 {
-    if (pItem->annotationsOff == 0) {
+    if (pItem->annotationsOff == 0)
         return 0;
-    }
     return dexGetParameterAnnotationSetRefList(pDexFile, pItem)->size;
 }
 
@@ -947,11 +943,8 @@ DEX_INLINE u4 dexGetAnnotationOff(
 DEX_INLINE const DexAnnotationItem* dexGetAnnotationItem(
     const DexFile* pDexFile, const DexAnnotationSetItem* pAnnoSet, u4 idx)
 {
-    u4 offset = dexGetAnnotationOff(pAnnoSet, idx);
-    if (offset == 0) {
-        return NULL;
-    }
-    return (const DexAnnotationItem*) (pDexFile->baseAddr + offset);
+    return (const DexAnnotationItem*)
+        (pDexFile->baseAddr + dexGetAnnotationOff(pAnnoSet, idx));
 }
 
 /*

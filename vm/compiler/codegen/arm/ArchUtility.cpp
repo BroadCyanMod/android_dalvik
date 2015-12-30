@@ -144,14 +144,11 @@ static void buildInsnString(const char *fmt, ArmLIR *lir, char* buf,
                        operand = expandImmediate(operand);
                        sprintf(tbuf,"%d [%#x]", operand, operand);
                        break;
-                   case 'q':
-                       sprintf(tbuf,"q%d",(operand - 128 - FP_REG_OFFSET) >> 2);
-                       break;
                    case 's':
                        sprintf(tbuf,"s%d",operand & FP_REG_MASK);
                        break;
                    case 'S':
-                       sprintf(tbuf,"d%d",(operand - FP_DOUBLE - FP_REG_OFFSET) >> 1);
+                       sprintf(tbuf,"d%d",(operand & FP_REG_MASK) >> 1);
                        break;
                    case 'h':
                        sprintf(tbuf,"%04x", operand);
@@ -191,15 +188,6 @@ static void buildInsnString(const char *fmt, ArmLIR *lir, char* buf,
                                break;
                            case kArmCondMi:
                                strcpy(tbuf, "mi");
-                               break;
-                           case kArmCondPl:
-                               strcpy(tbuf, "pl");
-                               break;
-                           case kArmCondHi:
-                               strcpy(tbuf, "hi");
-                               break;
-                           case kArmCondLs:
-                               strcpy(tbuf, "ls");
                                break;
                            default:
                                strcpy(tbuf, "");
@@ -293,7 +281,7 @@ void dvmDumpResourceMask(LIR *lir, u8 mask, const char *prefix)
         }
     }
     if (buf[0]) {
-        ALOGD("%s: %s", prefix, buf);
+        LOGD("%s: %s", prefix, buf);
     }
 }
 
@@ -303,26 +291,12 @@ void dvmDumpResourceMask(LIR *lir, u8 mask, const char *prefix)
 #define DUMP_RESOURCE_MASK(X)
 #define DUMP_SSA_REP(X)
 
-/*
- * Decodes generic ARM opcodes
- */
-static void printDefaultInstr(ArmLIR *lir, unsigned char *baseAddr)
-{
-    char buf[256];
-    char opName[256];
-    int  offset = lir->generic.offset;
-
-    buildInsnString(getEncoding(lir->opcode)->name, lir, opName, baseAddr, 256);
-    buildInsnString(getEncoding(lir->opcode)->fmt,  lir, buf,    baseAddr, 256);
-    ALOGD("%p (%04x): %-12s%s%s",
-         baseAddr + offset, offset, opName, buf,
-         lir->flags.isNop ? "(nop)" : "");
-}
-
 /* Pretty-print a LIR instruction */
 void dvmDumpLIRInsn(LIR *arg, unsigned char *baseAddr)
 {
     ArmLIR *lir = (ArmLIR *) arg;
+    char buf[256];
+    char opName[256];
     int offset = lir->generic.offset;
     int dest = lir->operands[0];
     const bool dumpNop = false;
@@ -330,79 +304,81 @@ void dvmDumpLIRInsn(LIR *arg, unsigned char *baseAddr)
     /* Handle pseudo-ops individually, and all regular insns as a group */
     switch(lir->opcode) {
         case kArmChainingCellBottom:
-            ALOGD("-------- end of chaining cells (0x%04x)", offset);
+            LOGD("-------- end of chaining cells (0x%04x)", offset);
             break;
         case kArmPseudoBarrier:
-            ALOGD("-------- BARRIER");
+            LOGD("-------- BARRIER");
             break;
         case kArmPseudoExtended:
-            ALOGD("-------- %s", (char *) dest);
+            LOGD("-------- %s", (char *) dest);
             break;
         case kArmPseudoSSARep:
             DUMP_SSA_REP(LOGD("-------- %s", (char *) dest));
             break;
         case kArmPseudoChainingCellBackwardBranch:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- chaining cell (backward branch): 0x%04x", dest);
+            LOGD("L%p:", lir);
+            LOGD("-------- chaining cell (backward branch): 0x%04x", dest);
             break;
         case kArmPseudoChainingCellNormal:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- chaining cell (normal): 0x%04x", dest);
+            LOGD("L%p:", lir);
+            LOGD("-------- chaining cell (normal): 0x%04x", dest);
             break;
         case kArmPseudoChainingCellHot:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- chaining cell (hot): 0x%04x", dest);
+            LOGD("L%p:", lir);
+            LOGD("-------- chaining cell (hot): 0x%04x", dest);
             break;
         case kArmPseudoChainingCellInvokePredicted:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- chaining cell (predicted): %s%s",
+            LOGD("L%p:", lir);
+            LOGD("-------- chaining cell (predicted): %s%s",
                  dest ? ((Method *) dest)->clazz->descriptor : "",
                  dest ? ((Method *) dest)->name : "N/A");
             break;
         case kArmPseudoChainingCellInvokeSingleton:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- chaining cell (invoke singleton): %s%s/%p",
+            LOGD("L%p:", lir);
+            LOGD("-------- chaining cell (invoke singleton): %s%s/%p",
                  ((Method *)dest)->clazz->descriptor,
                  ((Method *)dest)->name,
                  ((Method *)dest)->insns);
             break;
         case kArmPseudoEntryBlock:
-            ALOGD("-------- entry offset: 0x%04x", dest);
+            LOGD("-------- entry offset: 0x%04x", dest);
             break;
         case kArmPseudoDalvikByteCodeBoundary:
-            ALOGD("-------- dalvik offset: 0x%04x @ %s", dest,
+            LOGD("-------- dalvik offset: 0x%04x @ %s", dest,
                  (char *) lir->operands[1]);
             break;
         case kArmPseudoExitBlock:
-            ALOGD("-------- exit offset: 0x%04x", dest);
+            LOGD("-------- exit offset: 0x%04x", dest);
             break;
         case kArmPseudoPseudoAlign4:
-            ALOGD("%p (%04x): .align4", baseAddr + offset, offset);
+            LOGD("%p (%04x): .align4", baseAddr + offset, offset);
             break;
         case kArmPseudoPCReconstructionCell:
-            ALOGD("L%p:", lir);
-            ALOGD("-------- reconstruct dalvik PC : 0x%04x @ +0x%04x", dest,
-                 lir->operands[1]);
-            break;
-        case kArmPseudoPCReconstructionCellExtended:
-            ALOGD("-------- reconstruct dalvik PC : 0x%04x @ +0x%04x (extended)\n", dest,
+            LOGD("L%p:", lir);
+            LOGD("-------- reconstruct dalvik PC : 0x%04x @ +0x%04x", dest,
                  lir->operands[1]);
             break;
         case kArmPseudoPCReconstructionBlockLabel:
             /* Do nothing */
             break;
         case kArmPseudoEHBlockLabel:
-            ALOGD("Exception_Handling:");
+            LOGD("Exception_Handling:");
             break;
         case kArmPseudoTargetLabel:
         case kArmPseudoNormalBlockLabel:
-            ALOGD("L%p:", lir);
+            LOGD("L%p:", lir);
             break;
         default:
             if (lir->flags.isNop && !dumpNop) {
                 break;
             }
-            printDefaultInstr(lir, baseAddr);
+            buildInsnString(EncodingMap[lir->opcode].name, lir, opName,
+                            baseAddr, 256);
+            buildInsnString(EncodingMap[lir->opcode].fmt, lir, buf, baseAddr,
+                            256);
+            LOGD("%p (%04x): %-8s%s%s",
+                 baseAddr + offset, offset, opName, buf,
+                 lir->flags.isNop ? "(nop)" : "");
             break;
     }
 
@@ -419,25 +395,25 @@ void dvmDumpLIRInsn(LIR *arg, unsigned char *baseAddr)
 /* Dump instructions and constant pool contents */
 void dvmCompilerCodegenDump(CompilationUnit *cUnit)
 {
-    ALOGD("Dumping LIR insns");
+    LOGD("Dumping LIR insns");
     LIR *lirInsn;
     ArmLIR *armLIR;
 
-    ALOGD("installed code is at %p", cUnit->baseAddr);
-    ALOGD("total size is %d bytes", cUnit->totalSize);
+    LOGD("installed code is at %p", cUnit->baseAddr);
+    LOGD("total size is %d bytes", cUnit->totalSize);
     for (lirInsn = cUnit->firstLIRInsn; lirInsn; lirInsn = lirInsn->next) {
         dvmDumpLIRInsn(lirInsn, (unsigned char *) cUnit->baseAddr);
     }
     for (lirInsn = cUnit->classPointerList; lirInsn; lirInsn = lirInsn->next) {
         armLIR = (ArmLIR *) lirInsn;
-        ALOGD("%p (%04x): .class (%s)",
+        LOGD("%p (%04x): .class (%s)",
              (char*)cUnit->baseAddr + armLIR->generic.offset,
              armLIR->generic.offset,
              ((CallsiteInfo *) armLIR->operands[0])->classDescriptor);
     }
     for (lirInsn = cUnit->literalList; lirInsn; lirInsn = lirInsn->next) {
         armLIR = (ArmLIR *) lirInsn;
-        ALOGD("%p (%04x): .word (%#x)",
+        LOGD("%p (%04x): .word (%#x)",
              (char*)cUnit->baseAddr + armLIR->generic.offset,
              armLIR->generic.offset,
              armLIR->operands[0]);
@@ -445,18 +421,7 @@ void dvmCompilerCodegenDump(CompilationUnit *cUnit)
 }
 
 /* Target-specific cache flushing */
-void dvmCompilerCacheFlush(long start, long end, long flags)
+int dvmCompilerCacheFlush(long start, long end, long flags)
 {
-    cacheflush(start, end, flags);
-}
-
-/* Target-specific cache clearing */
-void dvmCompilerCacheClear(char *start, size_t size)
-{
-    /*
-     * de is an invalid opcode for arm.
-     * From gdb disassembly:  <UNDEFINED> instruction: 0xdede
-     */
-
-    memset(start, 0xde, size);
+    return cacheflush(start, end, flags);
 }

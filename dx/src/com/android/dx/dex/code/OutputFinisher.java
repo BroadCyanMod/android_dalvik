@@ -504,14 +504,7 @@ public final class OutputFinisher {
 
         while (guess != null) {
             if (guess.getFormat().isCompatible(insn)) {
-                /*
-                 * Don't break out for const_string to generate jumbo version
-                 * when option is enabled.
-                 */
-                if (!dexOptions.forceJumbo ||
-                    guess.getOpcode() != Opcodes.CONST_STRING) {
-                    break;
-                }
+                break;
             }
 
             guess = Dops.getNextOrNull(guess, dexOptions);
@@ -601,8 +594,6 @@ public final class OutputFinisher {
         int size = insns.size();
         ArrayList<DalvInsn> result = new ArrayList<DalvInsn>(size * 2);
 
-        ArrayList<CodeAddress> closelyBoundAddresses = new ArrayList<CodeAddress>();
-
         for (int i = 0; i < size; i++) {
             DalvInsn insn = insns.get(i);
             Dop originalOpcode = insn.getOpcode();
@@ -626,26 +617,8 @@ public final class OutputFinisher {
                 insn = insn.expandedVersion(compatRegs);
             }
 
-            if (insn instanceof CodeAddress) {
-                // If we have a closely bound address, don't add it yet,
-                // because we need to add it after the prefix for the
-                // instruction it is bound to.
-                if (((CodeAddress) insn).getBindsClosely()) {
-                    closelyBoundAddresses.add((CodeAddress)insn);
-                    continue;
-                }
-            }
-
             if (prefix != null) {
                 result.add(prefix);
-            }
-
-            // Add any pending closely bound addresses
-            if (!(insn instanceof ZeroSizeInsn) && closelyBoundAddresses.size() > 0) {
-                for (CodeAddress codeAddress: closelyBoundAddresses) {
-                    result.add(codeAddress);
-                }
-                closelyBoundAddresses.clear();
             }
 
             if (currentOpcode != originalOpcode) {

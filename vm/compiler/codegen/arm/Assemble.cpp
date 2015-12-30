@@ -654,7 +654,7 @@ ArmEncodingMap EncodingMap[kArmLast] = {
     ENCODING_MAP(kThumb2AdcRRR,  0xeb500000, /* setflags encoding */
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtBitBlt, 3, 0,
                  kFmtShift, -1, -1,
-                 IS_QUAD_OP | REG_DEF0_USE12 | SETS_CCODES | USES_CCODES,
+                 IS_QUAD_OP | REG_DEF0_USE12 | SETS_CCODES,
                  "adcs", "r!0d, r!1d, r!2d!3H", 2),
     ENCODING_MAP(kThumb2AndRRR,  0xea000000,
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtBitBlt, 3, 0,
@@ -677,7 +677,7 @@ ArmEncodingMap EncodingMap[kArmLast] = {
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtBitBlt, 3, 0,
                  kFmtUnused, -1, -1, IS_TERTIARY_OP | REG_DEF0_USE12,
                  "mul", "r!0d, r!1d, r!2d", 2),
-    ENCODING_MAP(kThumb2MvnRR,  0xea6f0000,
+    ENCODING_MAP(kThumb2MnvRR,  0xea6f0000,
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 3, 0, kFmtShift, -1, -1,
                  kFmtUnused, -1, -1, IS_TERTIARY_OP | REG_DEF0_USE1,
                  "mvn", "r!0d, r!1d, shift !2d", 2),
@@ -685,12 +685,12 @@ ArmEncodingMap EncodingMap[kArmLast] = {
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtModImm, -1, -1,
                  kFmtUnused, -1, -1,
                  IS_TERTIARY_OP | REG_DEF0_USE1 | SETS_CCODES,
-                 "rsbs", "r!0d,r!1d,#!2m", 2),
-    ENCODING_MAP(kThumb2NegRR,       0xf1d00000, /* instance of rsbs */
+                 "rsb", "r!0d,r!1d,#!2m", 2),
+    ENCODING_MAP(kThumb2NegRR,       0xf1d00000, /* instance of rsub */
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtUnused, -1, -1,
                  kFmtUnused, -1, -1,
                  IS_BINARY_OP | REG_DEF0_USE1 | SETS_CCODES,
-                 "negs", "r!0d,r!1d", 2),
+                 "neg", "r!0d,r!1d", 2),
     ENCODING_MAP(kThumb2OrrRRR,  0xea400000,
                  kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtBitBlt, 3, 0,
                  kFmtShift, -1, -1, IS_QUAD_OP | REG_DEF0_USE12,
@@ -774,15 +774,15 @@ ArmEncodingMap EncodingMap[kArmLast] = {
                  "it:!1b", "!0c", 1),
     ENCODING_MAP(kThumb2Fmstat,  0xeef1fa10,
                  kFmtUnused, -1, -1, kFmtUnused, -1, -1, kFmtUnused, -1, -1,
-                 kFmtUnused, -1, -1, NO_OPERAND | SETS_CCODES | USES_FPSTATUS,
+                 kFmtUnused, -1, -1, NO_OPERAND | SETS_CCODES,
                  "fmstat", "", 2),
     ENCODING_MAP(kThumb2Vcmpd,        0xeeb40b40,
                  kFmtDfp, 22, 12, kFmtDfp, 5, 0, kFmtUnused, -1, -1,
-                 kFmtUnused, -1, -1, IS_BINARY_OP | REG_USE01 | SETS_FPSTATUS,
+                 kFmtUnused, -1, -1, IS_BINARY_OP | REG_USE01,
                  "vcmp.f64", "!0S, !1S", 2),
     ENCODING_MAP(kThumb2Vcmps,        0xeeb40a40,
                  kFmtSfp, 22, 12, kFmtSfp, 5, 0, kFmtUnused, -1, -1,
-                 kFmtUnused, -1, -1, IS_BINARY_OP | REG_USE01 | SETS_FPSTATUS,
+                 kFmtUnused, -1, -1, IS_BINARY_OP | REG_USE01,
                  "vcmp.f32", "!0s, !1s", 2),
     ENCODING_MAP(kThumb2LdrPcRel12,       0xf8df0000,
                  kFmtBitBlt, 15, 12, kFmtBitBlt, 11, 0, kFmtUnused, -1, -1,
@@ -881,13 +881,6 @@ ArmEncodingMap EncodingMap[kArmLast] = {
                  kFmtUnused, -1, -1,
                  IS_BINARY_OP | REG_DEF0 | REG_USE_PC | IS_LOAD,
                  "ldr", "r!0d, [r15pc, -#!1d]", 2),
-#ifndef WITH_QC_PERF
-    ENCODING_MAP(kThumb2RsbRRR,  0xebd00000, /* setflags encoding */
-                 kFmtBitBlt, 11, 8, kFmtBitBlt, 19, 16, kFmtBitBlt, 3, 0,
-                 kFmtShift, -1, -1,
-                 IS_QUAD_OP | REG_DEF0_USE12 | SETS_CCODES,
-                 "rsb", "r!0d, r!1d, r!2d!3H", 2),
-#endif
     ENCODING_MAP(kThumbUndefined,       0xde00,
                  kFmtUnused, -1, -1, kFmtUnused, -1, -1, kFmtUnused, -1, -1,
                  kFmtUnused, -1, -1, NO_OPERAND,
@@ -931,24 +924,6 @@ static void installLiteralPools(CompilationUnit *cUnit)
 }
 
 /*
- * Return the encoding map for the specified ARM opcode
- */
-__attribute__((weak)) ArmEncodingMap* getEncoding(ArmOpcode opcode) {
-    if (opcode > kThumbUndefined) {
-        opcode = kThumbUndefined;
-    }
-    ArmEncodingMap* encoder = &EncodingMap[opcode];
-    return encoder;
-}
-
-/* process more ARM encodings */
-__attribute__((weak)) u4 processMoreEncodings(ArmEncodingMap* encoder, int pos, u4 operand)
-{
-    assert(0);
-    return 0;
-}
-
-/*
  * Assemble the LIR into binary instruction format.  Note that we may
  * discover that pc-relative displacements may not fit the selected
  * instruction.  In those cases we will try to substitute a new code
@@ -977,32 +952,31 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
         if (lir->opcode == kThumbLdrPcRel ||
             lir->opcode == kThumb2LdrPcRel12 ||
             lir->opcode == kThumbAddPcRel ||
-            ((lir->opcode == kThumb2Vldrd) && (lir->operands[1] == r15pc)) ||
             ((lir->opcode == kThumb2Vldrs) && (lir->operands[1] == r15pc))) {
             ArmLIR *lirTarget = (ArmLIR *) lir->generic.target;
             intptr_t pc = (lir->generic.offset + 4) & ~3;
             intptr_t target = lirTarget->generic.offset;
             int delta = target - pc;
             if (delta & 0x3) {
-                ALOGE("PC-rel distance is not multiples of 4: %d", delta);
+                LOGE("PC-rel distance is not multiples of 4: %d", delta);
                 dvmCompilerAbort(cUnit);
             }
             if ((lir->opcode == kThumb2LdrPcRel12) && (delta > 4091)) {
                 if (cUnit->printMe) {
-                    ALOGD("kThumb2LdrPcRel12@%x: delta=%d", lir->generic.offset,
+                    LOGD("kThumb2LdrPcRel12@%x: delta=%d", lir->generic.offset,
                          delta);
                     dvmCompilerCodegenDump(cUnit);
                 }
                 return kRetryHalve;
             } else if (delta > 1020) {
                 if (cUnit->printMe) {
-                    ALOGD("kThumbLdrPcRel@%x: delta=%d", lir->generic.offset,
+                    LOGD("kThumbLdrPcRel@%x: delta=%d", lir->generic.offset,
                          delta);
                     dvmCompilerCodegenDump(cUnit);
                 }
                 return kRetryHalve;
             }
-            if ((lir->opcode == kThumb2Vldrs) || (lir->opcode == kThumb2Vldrd)) {
+            if (lir->opcode == kThumb2Vldrs) {
                 lir->operands[2] = delta >> 2;
             } else {
                 lir->operands[1] = (lir->opcode == kThumb2LdrPcRel12) ?
@@ -1032,7 +1006,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
                 lir->generic.target = 0;
                 dvmCompilerSetupResourceMasks(lir);
                 if (cUnit->printMe) {
-                    ALOGD("kThumb2Cbnz/kThumb2Cbz@%x: delta=%d",
+                    LOGD("kThumb2Cbnz/kThumb2Cbz@%x: delta=%d",
                          lir->generic.offset, delta);
                     dvmCompilerCodegenDump(cUnit);
                 }
@@ -1048,7 +1022,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
             int delta = target - pc;
             if ((lir->opcode == kThumbBCond) && (delta > 254 || delta < -256)) {
                 if (cUnit->printMe) {
-                    ALOGD("kThumbBCond@%x: delta=%d", lir->generic.offset,
+                    LOGD("kThumbBCond@%x: delta=%d", lir->generic.offset,
                          delta);
                     dvmCompilerCodegenDump(cUnit);
                 }
@@ -1061,7 +1035,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
             intptr_t target = targetLIR->generic.offset;
             int delta = target - pc;
             if (delta > 2046 || delta < -2048) {
-                ALOGE("Unconditional branch distance out of range: %d", delta);
+                LOGE("Unconditional branch distance out of range: %d", delta);
                 dvmCompilerAbort(cUnit);
             }
             lir->operands[0] = delta >> 1;
@@ -1093,7 +1067,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
             NEXT_LIR(lir)->operands[0] = (delta>> 1) & 0x7ff;
         }
 
-        ArmEncodingMap* encoder = getEncoding(lir->opcode);
+        ArmEncodingMap *encoder = &EncodingMap[lir->opcode];
         u4 bits = encoder->skeleton;
         int i;
         for (i = 0; i < 4; i++) {
@@ -1148,7 +1122,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
                 case kFmtDfp: {
                     assert(DOUBLEREG(operand));
                     assert((operand & 0x1) == 0);
-                    int regName = (operand - FP_DOUBLE - FP_REG_OFFSET) / 2;
+                    int regName = (operand & FP_REG_MASK) >> 1;
                     /* Snag the 1-bit slice and position it */
                     value = ((regName & 0x10) >> 4) <<
                             encoder->fieldLoc[i].end;
@@ -1183,8 +1157,7 @@ static AssemblerStatus assembleInstructions(CompilationUnit *cUnit,
                     bits |= value;
                     break;
                 default:
-                    bits |= processMoreEncodings(encoder, i, operand);
-                    break;
+                    assert(0);
             }
         }
         if (encoder->size == 2) {
@@ -1317,10 +1290,10 @@ static inline u4 getChainCellSize(const ChainCellCounts* pChainCellCounts)
     for (i = 0; i < kChainingCellGap; i++) {
         if (i != kChainingCellInvokePredicted) {
             cellSize += pChainCellCounts->u.count[i] *
-                        ((CHAIN_CELL_NORMAL_SIZE >> 2)+pChainCellCounts->extraSize);
+                        (CHAIN_CELL_NORMAL_SIZE >> 2);
         } else {
             cellSize += pChainCellCounts->u.count[i] *
-                ((CHAIN_CELL_PREDICTED_SIZE >> 2)+pChainCellCounts->extraSize);
+                (CHAIN_CELL_PREDICTED_SIZE >> 2);
         }
     }
     return cellSize;
@@ -1362,7 +1335,7 @@ static void matchSignatureBreakpoint(const CompilationUnit *cUnit,
                 }
             }
             if (j == gDvmJit.signatureBreakpointSize) {
-                ALOGD("Signature match starting from offset %#x (%d words)",
+                LOGD("Signature match starting from offset %#x (%d words)",
                      i*4, gDvmJit.signatureBreakpointSize);
                 int descSize = getTraceDescriptionSize(cUnit->traceDesc);
                 JitTraceDescription *newCopy =
@@ -1399,9 +1372,7 @@ void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info)
          armLIR = NEXT_LIR(armLIR)) {
         armLIR->generic.offset = offset;
         if (armLIR->opcode >= 0 && !armLIR->flags.isNop) {
-            armLIR->flags.size = getEncoding(armLIR->opcode)->size * 2;
-            if(armLIR->flags.size==0)
-                armLIR->flags.isNop=true;
+            armLIR->flags.size = EncodingMap[armLIR->opcode].size * 2;
             offset += armLIR->flags.size;
         } else if (armLIR->opcode == kArmPseudoPseudoAlign4) {
             if (offset & 0x2) {
@@ -1466,7 +1437,7 @@ void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info)
     /* Allocate enough space for the code block */
     cUnit->codeBuffer = (unsigned char *)dvmCompilerNew(chainCellOffset, true);
     if (cUnit->codeBuffer == NULL) {
-        ALOGE("Code buffer allocation failure");
+        LOGE("Code buffer allocation failure");
         info->discardResult = true;
         return;
     }
@@ -1496,7 +1467,7 @@ void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info)
         case kRetryHalve:
             return;
         default:
-             ALOGE("Unexpected assembler status: %d", cUnit->assemblerStatus);
+             LOGE("Unexpected assembler status: %d", cUnit->assemblerStatus);
              dvmAbort();
     }
 
@@ -1544,9 +1515,6 @@ void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info)
         /* Set the gap number in the chaining cell count structure */
         chainCellCounts.u.count[kChainingCellGap] = chainingCellGap;
 
-        assert((cUnit->chainingCellExtraSize & 0x3) ==0);
-        chainCellCounts.extraSize = cUnit->chainingCellExtraSize >> 2;
-
         memcpy((char*)cUnit->baseAddr + chainCellOffset, &chainCellCounts,
                sizeof(chainCellCounts));
 
@@ -1584,7 +1552,7 @@ void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info)
  */
 static u4 getSkeleton(ArmOpcode op)
 {
-    return getEncoding(op)->skeleton;
+    return EncodingMap[op].skeleton;
 }
 
 static u4 assembleChainingBranch(int branchOffset, bool thumbTarget)
@@ -1636,7 +1604,7 @@ void* dvmJitChain(void* tgtAddr, u4* branchAddr)
         gDvmJit.translationChains++;
 
         COMPILER_TRACE_CHAINING(
-            ALOGD("Jit Runtime: chaining %#x to %#x",
+            LOGD("Jit Runtime: chaining %#x to %#x",
                  (int) branchAddr, (int) tgtAddr & -2));
 
         /*
@@ -1815,7 +1783,7 @@ const Method *dvmJitToPatchPredictedChain(const Method *method,
     if ((tgtAddr == 0) ||
         ((void*)tgtAddr == dvmCompilerGetInterpretTemplate())) {
         COMPILER_TRACE_CHAINING(
-            ALOGD("Jit Runtime: predicted chain %p to method %s%s delayed",
+            LOGD("Jit Runtime: predicted chain %p to method %s%s delayed",
                  cell, method->clazz->descriptor, method->name));
         goto done;
     }
@@ -1867,7 +1835,7 @@ void dvmCompilerPatchInlineCache(void)
 
     UNPROTECT_CODE_CACHE(gDvmJit.codeCache, gDvmJit.codeCacheByteUsed);
 
-    //ALOGD("Number of IC patch work orders: %d", gDvmJit.compilerICPatchIndex);
+    //LOGD("Number of IC patch work orders: %d", gDvmJit.compilerICPatchIndex);
 
     /* Initialize the min/max address range */
     minAddr = (PredictedChainingCell *)
@@ -1887,7 +1855,7 @@ void dvmCompilerPatchInlineCache(void)
         cellContent->clazz = clazz;
 
         COMPILER_TRACE_CHAINING(
-            ALOGD("Jit Runtime: predicted chain %p from %s to %s (%s) "
+            LOGD("Jit Runtime: predicted chain %p from %s to %s (%s) "
                  "patched",
                  cellAddr,
                  cellAddr->clazz->descriptor,
@@ -1942,7 +1910,6 @@ static u4* unchainSingle(JitEntry *trace)
         }
 
         for (j = 0; j < pChainCellCounts->u.count[i]; j++) {
-            pChainCells += pChainCellCounts->extraSize;
             switch(i) {
                 case kChainingCellNormal:
                 case kChainingCellHot:
@@ -1972,11 +1939,11 @@ static u4* unchainSingle(JitEntry *trace)
                     predChainCell->clazz = PREDICTED_CHAIN_CLAZZ_INIT;
                     break;
                 default:
-                    ALOGE("Unexpected chaining type: %d", i);
+                    LOGE("Unexpected chaining type: %d", i);
                     dvmAbort();  // dvmAbort OK here - can't safely recover
             }
             COMPILER_TRACE_CHAINING(
-                ALOGD("Jit Runtime: unchaining %#x", (int)pChainCells));
+                LOGD("Jit Runtime: unchaining %#x", (int)pChainCells));
             pChainCells += elemSize;  /* Advance by a fixed number of words */
         }
     }
@@ -1988,13 +1955,14 @@ void dvmJitUnchainAll()
 {
     u4* lowAddress = NULL;
     u4* highAddress = NULL;
+    unsigned int i;
     if (gDvmJit.pJitEntryTable != NULL) {
         COMPILER_TRACE_CHAINING(LOGD("Jit Runtime: unchaining all"));
         dvmLockMutex(&gDvmJit.tableLock);
 
         UNPROTECT_CODE_CACHE(gDvmJit.codeCache, gDvmJit.codeCacheByteUsed);
 
-        for (size_t i = 0; i < gDvmJit.jitTableSize; i++) {
+        for (i = 0; i < gDvmJit.jitTableSize; i++) {
             if (gDvmJit.pJitEntryTable[i].dPC &&
                 !gDvmJit.pJitEntryTable[i].u.info.isMethodEntry &&
                 gDvmJit.pJitEntryTable[i].codeAddress &&
@@ -2047,12 +2015,12 @@ static int dumpTraceProfile(JitEntry *p, bool silent, bool reset,
 
     if (p->codeAddress == NULL) {
         if (!silent)
-            ALOGD("TRACEPROFILE NULL");
+            LOGD("TRACEPROFILE NULL");
         return 0;
     }
     if (p->codeAddress == dvmCompilerGetInterpretTemplate()) {
         if (!silent)
-            ALOGD("TRACEPROFILE INTERPRET_ONLY");
+            LOGD("TRACEPROFILE INTERPRET_ONLY");
         return 0;
     }
     JitTraceCounter_t count = getProfileCount(p);
@@ -2081,7 +2049,7 @@ static int dumpTraceProfile(JitEntry *p, bool silent, bool reset,
                        method->accessFlags,
                        addrToLineCb, NULL, &addrToLine);
 
-    ALOGD("TRACEPROFILE 0x%08x % 10d %5.2f%% [%#x(+%d), %d] %s%s;%s",
+    LOGD("TRACEPROFILE 0x%08x % 10d %5.2f%% [%#x(+%d), %d] %s%s;%s",
          (int) getTraceBase(p),
          count,
          ((float ) count) / sum * 100.0,
@@ -2106,7 +2074,7 @@ static int dumpTraceProfile(JitEntry *p, bool silent, bool reset,
             desc->trace[idx+JIT_TRACE_CUR_METHOD-1].info.meta;
         char *methodDesc = dexProtoCopyMethodDescriptor(&method->prototype);
         /* Print the callee info in the trace */
-        ALOGD("    -> %s%s;%s", method->clazz->descriptor, method->name,
+        LOGD("    -> %s%s;%s", method->clazz->descriptor, method->name,
              methodDesc);
     }
 
@@ -2179,7 +2147,7 @@ void dvmCompilerSortAndPrintTraceProfiles()
         sum = 1;
     }
 
-    ALOGD("JIT: Average execution count -> %d",(int)(sum / numTraces));
+    LOGD("JIT: Average execution count -> %d",(int)(sum / numTraces));
 
     /* Dump the sorted entries. The count of each trace will be reset to 0. */
     for (i=0; i < gDvmJit.jitTableSize; i++) {
@@ -2225,14 +2193,13 @@ static void findClassPointersSingleTrace(char *base, void (*callback)(void *))
              chainTypeIdx++) {
             if (chainTypeIdx != kChainingCellInvokePredicted) {
                 /* In 32-bit words */
-                pChainCells += ((CHAIN_CELL_NORMAL_SIZE >> 2)+pChainCellCounts->extraSize) *
+                pChainCells += (CHAIN_CELL_NORMAL_SIZE >> 2) *
                     pChainCellCounts->u.count[chainTypeIdx];
                 continue;
             }
             for (chainIdx = 0;
                  chainIdx < pChainCellCounts->u.count[chainTypeIdx];
                  chainIdx++) {
-                pChainCells += pChainCellCounts->extraSize;
                 PredictedChainingCell *cell =
                     (PredictedChainingCell *) pChainCells;
                 /*
@@ -2451,12 +2418,12 @@ static int selfVerificationLoad(int addr, int size)
             data = *((u4*) addr);
             break;
         default:
-            ALOGE("*** ERROR: BAD SIZE IN selfVerificationLoad: %d", size);
+            LOGE("*** ERROR: BAD SIZE IN selfVerificationLoad: %d", size);
             data = 0;
             dvmAbort();
     }
 
-    //ALOGD("*** HEAP LOAD: Addr: %#x Data: %#x Size: %d", addr, data, size);
+    //LOGD("*** HEAP LOAD: Addr: %#x Data: %#x Size: %d", addr, data, size);
     return data;
 }
 
@@ -2480,7 +2447,7 @@ static s8 selfVerificationLoadDoubleword(int addr)
         }
     }
 
-    //ALOGD("*** HEAP LOAD DOUBLEWORD: Addr: %#x Data: %#x Data2: %#x",
+    //LOGD("*** HEAP LOAD DOUBLEWORD: Addr: %#x Data: %#x Data2: %#x",
     //    addr, data, data2);
     return (((s8) data2) << 32) | data;
 }
@@ -2500,7 +2467,7 @@ static void selfVerificationStore(int addr, int data, int size)
     int maskedAddr = addr & 0xFFFFFFFC;
     int alignment = addr & 0x3;
 
-    //ALOGD("*** HEAP STORE: Addr: %#x Data: %#x Size: %d", addr, data, size);
+    //LOGD("*** HEAP STORE: Addr: %#x Data: %#x Size: %d", addr, data, size);
 
     for (heapSpacePtr = shadowSpace->heapSpace;
          heapSpacePtr != shadowSpace->heapSpaceTail; heapSpacePtr++) {
@@ -2531,7 +2498,7 @@ static void selfVerificationStore(int addr, int data, int size)
             *((u4*) addr) = data;
             break;
         default:
-            ALOGE("*** ERROR: BAD SIZE IN selfVerificationSave: %d", size);
+            LOGE("*** ERROR: BAD SIZE IN selfVerificationSave: %d", size);
             dvmAbort();
     }
 }
@@ -2548,7 +2515,7 @@ static void selfVerificationStoreDoubleword(int addr, s8 double_data)
     int data2 = double_data >> 32;
     bool store1 = false, store2 = false;
 
-    //ALOGD("*** HEAP STORE DOUBLEWORD: Addr: %#x Data: %#x, Data2: %#x",
+    //LOGD("*** HEAP STORE DOUBLEWORD: Addr: %#x Data: %#x, Data2: %#x",
     //    addr, data, data2);
 
     for (heapSpacePtr = shadowSpace->heapSpace;
@@ -2661,7 +2628,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
 
     if ((insn & kMemOp2) == kMemOp2) {
         insn = (insn << 16) | (insn >> 16);
-        //ALOGD("*** THUMB2 - Addr: %#x Insn: %#x", lr, insn);
+        //LOGD("*** THUMB2 - Addr: %#x Insn: %#x", lr, insn);
 
         int opcode12 = (insn >> 20) & 0xFFF;
         int opcode4 = (insn >> 8) & 0xF;
@@ -2745,7 +2712,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
                     if (insn & 0x400000) rt |= 0x10;
                     rt = rt << 1;
                 } else {
-                    ALOGE("*** ERROR: UNRECOGNIZED VECTOR MEM OP: %x", opcode4);
+                    LOGE("*** ERROR: UNRECOGNIZED VECTOR MEM OP: %x", opcode4);
                     dvmAbort();
                 }
                 rt += 14;
@@ -2778,7 +2745,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
                 offset = 0;
                 break;
             default:
-                ALOGE("*** ERROR: UNRECOGNIZED THUMB2 MEM OP: %x", opcode12);
+                LOGE("*** ERROR: UNRECOGNIZED THUMB2 MEM OP: %x", opcode12);
                 offset = 0;
                 dvmAbort();
         }
@@ -2786,7 +2753,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
         // Handle the decoded mem op accordingly
         if (store) {
             if (size == kSVVariable) {
-                ALOGD("*** THUMB2 STMIA CURRENTLY UNUSED (AND UNTESTED)");
+                LOGD("*** THUMB2 STMIA CURRENTLY UNUSED (AND UNTESTED)");
                 int i;
                 int regList = insn & 0xFFFF;
                 for (i = 0; i < 16; i++) {
@@ -2807,7 +2774,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
             }
         } else {
             if (size == kSVVariable) {
-                ALOGD("*** THUMB2 LDMIA CURRENTLY UNUSED (AND UNTESTED)");
+                LOGD("*** THUMB2 LDMIA CURRENTLY UNUSED (AND UNTESTED)");
                 int i;
                 int regList = insn & 0xFFFF;
                 for (i = 0; i < 16; i++) {
@@ -2828,7 +2795,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
             }
         }
     } else {
-        //ALOGD("*** THUMB - Addr: %#x Insn: %#x", lr, insn);
+        //LOGD("*** THUMB - Addr: %#x Insn: %#x", lr, insn);
 
         // Update the link register
         selfVerificationMemRegStore(sp, old_lr+2, 13);
@@ -2928,7 +2895,7 @@ void dvmSelfVerificationMemOpDecode(int lr, int* sp)
                 offset = 0;
                 break;
             default:
-                ALOGE("*** ERROR: UNRECOGNIZED THUMB MEM OP: %x", opcode5);
+                LOGE("*** ERROR: UNRECOGNIZED THUMB MEM OP: %x", opcode5);
                 offset = 0;
                 dvmAbort();
         }

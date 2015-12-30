@@ -73,7 +73,7 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
 
     /* make sure we're still at the start of an empty file */
     if (lseek(cacheFd, 0, SEEK_END) != 0) {
-        ALOGE("DexOptZ: new cache file '%s' is not empty", debugFileName);
+        LOGE("DexOptZ: new cache file '%s' is not empty", debugFileName);
         goto bail;
     }
 
@@ -94,13 +94,13 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
      * Open the zip archive, find the DEX entry.
      */
     if (dexZipPrepArchive(zipFd, debugFileName, &zippy) != 0) {
-        ALOGW("DexOptZ: unable to open zip archive '%s'", debugFileName);
+        LOGW("DexOptZ: unable to open zip archive '%s'", debugFileName);
         goto bail;
     }
 
     zipEntry = dexZipFindEntry(&zippy, kClassesDex);
     if (zipEntry == NULL) {
-        ALOGW("DexOptZ: zip archive '%s' does not include %s",
+        LOGW("DexOptZ: zip archive '%s' does not include %s",
             debugFileName, kClassesDex);
         goto bail;
     }
@@ -111,7 +111,7 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
     if (dexZipGetEntryInfo(&zippy, zipEntry, NULL, &uncompLen, NULL, NULL,
             &modWhen, &crc32) != 0)
     {
-        ALOGW("DexOptZ: zip archive GetEntryInfo failed on %s", debugFileName);
+        LOGW("DexOptZ: zip archive GetEntryInfo failed on %s", debugFileName);
         goto bail;
     }
 
@@ -123,7 +123,7 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
      * Extract the DEX data into the cache file at the current offset.
      */
     if (dexZipExtractEntryToFile(&zippy, zipEntry, cacheFd) != 0) {
-        ALOGW("DexOptZ: extraction of %s from %s failed",
+        LOGW("DexOptZ: extraction of %s from %s failed",
             kClassesDex, debugFileName);
         goto bail;
     }
@@ -176,7 +176,7 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
     if (dvmPrepForDexOpt(bootClassPath, dexOptMode, verifyMode,
             dexoptFlags) != 0)
     {
-        ALOGE("DexOptZ: VM init failed");
+        LOGE("DexOptZ: VM init failed");
         goto bail;
     }
 
@@ -186,7 +186,7 @@ static int extractAndProcessZip(int zipFd, int cacheFd,
     if (!dvmContinueOptimization(cacheFd, dexOffset, uncompLen, debugFileName,
             modWhen, crc32, isBootstrap))
     {
-        ALOGE("Optimization failed");
+        LOGE("Optimization failed");
         goto bail;
     }
 
@@ -214,7 +214,7 @@ static int processZipFile(int zipFd, int cacheFd, const char* zipName,
      */
     const char* bcp = getenv("BOOTCLASSPATH");
     if (bcp == NULL) {
-        ALOGE("DexOptZ: BOOTCLASSPATH not set");
+        LOGE("DexOptZ: BOOTCLASSPATH not set");
         return -1;
     }
 
@@ -235,13 +235,13 @@ static int processZipFile(int zipFd, int cacheFd, const char* zipName,
         int matchOffset = match - bcp;
         if (matchOffset > 0 && bcp[matchOffset-1] == ':')
             matchOffset--;
-        ALOGV("DexOptZ: found '%s' in bootclasspath, cutting off at %d",
+        LOGV("DexOptZ: found '%s' in bootclasspath, cutting off at %d",
             zipName, matchOffset);
         bcpCopy = strdup(bcp);
         bcpCopy[matchOffset] = '\0';
 
         bcp = bcpCopy;
-        ALOGD("DexOptZ: truncated BOOTCLASSPATH to '%s'", bcp);
+        LOGD("DexOptZ: truncated BOOTCLASSPATH to '%s'", bcp);
         isBootstrap = true;
     }
 
@@ -258,7 +258,7 @@ static int processZipFile(int zipFd, int cacheFd, const char* zipName,
         char* endp;                                                         \
         (_var) = _func(*++argv, &endp, 0);                                  \
         if (*endp != '\0') {                                                \
-            ALOGE("%s '%s'", _msg, *argv);                                   \
+            LOGE("%s '%s'", _msg, *argv);                                   \
             goto bail;                                                      \
         }                                                                   \
         --argc;                                                             \
@@ -292,7 +292,7 @@ static int fromZip(int argc, char* const argv[])
     const char* dexoptFlags;
 
     if (argc != 6) {
-        ALOGE("Wrong number of args for --zip (found %d)", argc);
+        LOGE("Wrong number of args for --zip (found %d)", argc);
         goto bail;
     }
 
@@ -429,7 +429,7 @@ static int fromDex(int argc, char* const argv[])
 
     if (argc < 10) {
         /* don't have all mandatory args */
-        ALOGE("Not enough arguments for --dex (found %d)", argc);
+        LOGE("Not enough arguments for --dex (found %d)", argc);
         goto bail;
     }
 
@@ -442,7 +442,7 @@ static int fromDex(int argc, char* const argv[])
      */
     GET_ARG(vmBuildVersion, strtol, "bad vm build");
     if (vmBuildVersion != DALVIK_VM_BUILD) {
-        ALOGE("DexOpt: build rev does not match VM: %d vs %d",
+        LOGE("DexOpt: build rev does not match VM: %d vs %d",
             vmBuildVersion, DALVIK_VM_BUILD);
         goto bail;
     }
@@ -455,7 +455,7 @@ static int fromDex(int argc, char* const argv[])
     GET_ARG(crc, strtoul, "bad crc");
     GET_ARG(flags, strtol, "bad flags");
 
-    ALOGV("Args: fd=%d off=%ld len=%ld name='%s' mod=%#x crc=%#x flg=%d (argc=%d)",
+    LOGV("Args: fd=%d off=%ld len=%ld name='%s' mod=%#x crc=%#x flg=%d (argc=%d)",
         fd, offset, length, debugFileName, modWhen, crc, flags, argc);
     assert(argc > 0);
 
@@ -469,7 +469,7 @@ static int fromDex(int argc, char* const argv[])
         bcpLen = 0;
         for (i = 0, argp = argv; i < argc; i++) {
             ++argp;
-            ALOGV("DEP: '%s'", *argp);
+            LOGV("DEP: '%s'", *argp);
             bcpLen += strlen(*argp) + 1;
         }
 
@@ -488,7 +488,7 @@ static int fromDex(int argc, char* const argv[])
 
         assert((int) strlen(bootClassPath) == bcpLen-1);
     }
-    ALOGV("  bootclasspath is '%s'", bootClassPath);
+    LOGV("  bootclasspath is '%s'", bootClassPath);
 
     /* start the VM partway */
 
@@ -511,7 +511,7 @@ static int fromDex(int argc, char* const argv[])
     }
 
     if (dvmPrepForDexOpt(bootClassPath, dexOptMode, verifyMode, flags) != 0) {
-        ALOGE("VM init failed");
+        LOGE("VM init failed");
         goto bail;
     }
 
@@ -521,7 +521,7 @@ static int fromDex(int argc, char* const argv[])
     if (!dvmContinueOptimization(fd, offset, length, debugFileName,
             modWhen, crc, (flags & DEXOPT_IS_BOOTSTRAP) != 0))
     {
-        ALOGE("Optimization failed");
+        LOGE("Optimization failed");
         goto bail;
     }
 
@@ -541,13 +541,13 @@ bail:
      */
 #if 0
     if (vmStarted) {
-        ALOGI("DexOpt shutting down, result=%d", result);
+        LOGI("DexOpt shutting down, result=%d", result);
         dvmShutdown();
     }
 #endif
 
     free(bootClassPath);
-    ALOGV("DexOpt command complete (result=%d)", result);
+    LOGV("DexOpt command complete (result=%d)", result);
     return result;
 }
 

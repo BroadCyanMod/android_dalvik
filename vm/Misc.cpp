@@ -184,7 +184,7 @@ void dvmPrintDebugMessage(const DebugOutputTarget* target, const char* format,
         vfprintf(target->data.file.fp, format, args);
         break;
     default:
-        ALOGE("unexpected 'which' %d", target->which);
+        LOGE("unexpected 'which' %d", target->which);
         break;
     }
 
@@ -512,12 +512,7 @@ u8 dvmGetOtherThreadCpuTimeNsec(pthread_t thread)
  */
 bool dvmIterativeSleep(int iteration, int maxTotalSleep, u8 relStartTime)
 {
-    /*
-     * Minimum sleep is one millisecond, it is important to keep this value
-     * low to ensure short GC pauses since dvmSuspendAllThreads() uses this
-     * function.
-     */
-    const int minSleep = 1000;
+    const int minSleep = 10000;
     u8 curTime;
     int curDelay;
 
@@ -575,11 +570,11 @@ bool dvmSetCloseOnExec(int fd)
      */
     flags = fcntl(fd, F_GETFD);
     if (flags < 0) {
-        ALOGW("Unable to get fd flags for fd %d", fd);
+        LOGW("Unable to get fd flags for fd %d", fd);
         return false;
     }
     if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
-        ALOGW("Unable to set close-on-exec for fd %d", fd);
+        LOGW("Unable to set close-on-exec for fd %d", fd);
         return false;
     }
     return true;
@@ -624,7 +619,6 @@ void *dvmAllocRegion(size_t byteCount, int prot, const char *name) {
         return NULL;
     }
     if (ret == -1) {
-        munmap(base, byteCount);
         return NULL;
     }
     return base;
@@ -676,7 +670,7 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
     sprintf(nameBuf, "/proc/self/task/%d/stat", (int) tid);
     fd = open(nameBuf, O_RDONLY);
     if (fd < 0) {
-        ALOGV("Unable to open '%s': %s", nameBuf, strerror(errno));
+        LOGV("Unable to open '%s': %s", nameBuf, strerror(errno));
         return false;
     }
 
@@ -684,7 +678,7 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
     int cc = read(fd, lineBuf, sizeof(lineBuf)-1);
     if (cc <= 0) {
         const char* msg = (cc == 0) ? "unexpected EOF" : strerror(errno);
-        ALOGI("Unable to read '%s': %s", nameBuf, msg);
+        LOGI("Unable to read '%s': %s", nameBuf, msg);
         close(fd);
         return false;
     }
@@ -700,10 +694,8 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
     char* cp = strchr(lineBuf, ')');
     if (cp == NULL)
         goto parse_fail;
-    cp += 2;
-    pData->state = *cp++;
-
-    for (i = 3; i < 13; i++) {
+    cp++;
+    for (i = 2; i < 13; i++) {
         cp = strchr(cp+1, ' ');
         if (cp == NULL)
             goto parse_fail;
@@ -715,7 +707,7 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
     char* endp;
     pData->utime = strtoul(cp+1, &endp, 10);
     if (endp == cp+1)
-        ALOGI("Warning: strtoul failed on utime ('%.30s...')", cp);
+        LOGI("Warning: strtoul failed on utime ('%.30s...')", cp);
 
     cp = strchr(cp+1, ' ');
     if (cp == NULL)
@@ -723,7 +715,7 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
 
     pData->stime = strtoul(cp+1, &endp, 10);
     if (endp == cp+1)
-        ALOGI("Warning: strtoul failed on stime ('%.30s...')", cp);
+        LOGI("Warning: strtoul failed on stime ('%.30s...')", cp);
 
     /*
      * Skip more stuff we don't care about.
@@ -739,12 +731,12 @@ bool dvmGetThreadStats(ProcStatData* pData, pid_t tid)
      */
     pData->processor = strtol(cp+1, &endp, 10);
     if (endp == cp+1)
-        ALOGI("Warning: strtoul failed on processor ('%.30s...')", cp);
+        LOGI("Warning: strtoul failed on processor ('%.30s...')", cp);
 
     return true;
 
 parse_fail:
-    ALOGI("stat parse failed (%s)", lineBuf);
+    LOGI("stat parse failed (%s)", lineBuf);
     return false;
 }
 

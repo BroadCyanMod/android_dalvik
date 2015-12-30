@@ -39,76 +39,49 @@ else
 endif
 host_smp_flag := -DANDROID_SMP=1
 
-ifeq ($(ARCH_ARM_HAVE_ARMV7A),true)
-    target_inline_arg5_flag := -DINLINE_ARG_EXPANDED
-    host_inline_arg5_flag := -DINLINE_ARG_EXPANDED
-else
-    target_inline_arg5_flag :=
-    host_inline_arg5_flag :=
-endif
-
-
-
 # Build the installed version (libdvm.so) first
-WITH_JIT := true
 include $(LOCAL_PATH)/ReconfigureDvm.mk
 
 # Overwrite default settings
+LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE := libdvm
 LOCAL_CFLAGS += $(target_smp_flag)
-ifeq ($(TARGET_ARCH_LOWMEM),true)
-    LOCAL_CFLAGS += -DDALVIK_LOWMEM
-endif
-
-# Define WITH_ADDRESS_SANITIZER to build an ASan-instrumented version of the
-# library in /system/lib/asan/libdvm.so.
-ifneq ($(strip $(WITH_ADDRESS_SANITIZER)),)
-    LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/asan
-    LOCAL_ADDRESS_SANITIZER := true
-    LOCAL_CFLAGS := $(filter-out $(CLANG_CONFIG_UNKNOWN_CFLAGS),$(LOCAL_CFLAGS))
-endif
-
-LOCAL_CFLAGS += $(target_inline_arg5_flag)
-# TODO: split out the asflags.
-LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
 include $(BUILD_SHARED_LIBRARY)
 
-# Derivation #1
-# Enable assertions and JIT tuning
-include $(LOCAL_PATH)/ReconfigureDvm.mk
-LOCAL_CFLAGS += -UNDEBUG -DDEBUG=1 -DLOG_NDEBUG=1 -DWITH_DALVIK_ASSERT \
-                -DWITH_JIT_TUNING $(target_smp_flag)
-LOCAL_CFLAGS += $(target_inline_arg5_flag)
-# TODO: split out the asflags.
-LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
-LOCAL_MODULE := libdvm_assert
-include $(BUILD_SHARED_LIBRARY)
+# If WITH_JIT is configured, build multiple versions of libdvm.so to facilitate
+# correctness/performance bugs triage
+ifeq ($(WITH_JIT),true)
 
-ifneq ($(dvm_arch),mips)    # MIPS support for self-verification is incomplete
+    # Derivation #1
+    # Enable assert and JIT tuning
+    include $(LOCAL_PATH)/ReconfigureDvm.mk
+
+    # Enable assertions and JIT-tuning
+    LOCAL_CFLAGS += -UNDEBUG -DDEBUG=1 -DLOG_NDEBUG=1 -DWITH_DALVIK_ASSERT \
+                    -DWITH_JIT_TUNING $(target_smp_flag)
+    LOCAL_MODULE := libdvm_assert
+    include $(BUILD_SHARED_LIBRARY)
 
     # Derivation #2
-    # Enable assertions and JIT self-verification
+    # Enable assert and self-verification
     include $(LOCAL_PATH)/ReconfigureDvm.mk
+
+    # Enable assertions and JIT self-verification
     LOCAL_CFLAGS += -UNDEBUG -DDEBUG=1 -DLOG_NDEBUG=1 -DWITH_DALVIK_ASSERT \
                     -DWITH_SELF_VERIFICATION $(target_smp_flag)
-    LOCAL_CFLAGS += $(target_inline_arg5_flag)
-    # TODO: split out the asflags.
-    LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
     LOCAL_MODULE := libdvm_sv
     include $(BUILD_SHARED_LIBRARY)
 
-endif # dvm_arch!=mips
+    # Derivation #3
+    # Compile out the JIT
+    WITH_JIT := false
+    include $(LOCAL_PATH)/ReconfigureDvm.mk
 
-# Derivation #3
-# Compile out the JIT
-WITH_JIT := false
-include $(LOCAL_PATH)/ReconfigureDvm.mk
-LOCAL_CFLAGS += $(target_smp_flag)
-# TODO: split out the asflags.
-LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
-LOCAL_MODULE := libdvm_interp
-include $(BUILD_SHARED_LIBRARY)
+    LOCAL_CFLAGS += $(target_smp_flag)
+    LOCAL_MODULE := libdvm_interp
+    include $(BUILD_SHARED_LIBRARY)
 
+endif
 
 #
 # Build for the host.
@@ -123,7 +96,8 @@ ifeq ($(WITH_HOST_DALVIK),true)
     dvm_arch := $(HOST_ARCH)
     # Note: HOST_ARCH_VARIANT isn't defined.
     dvm_arch_variant := $(HOST_ARCH)
-    WITH_JIT := true
+
+    WITH_JIT := false
     include $(LOCAL_PATH)/Dvm.mk
 
     LOCAL_SHARED_LIBRARIES += libcrypto libssl libicuuc libicui18n
@@ -137,7 +111,7 @@ ifeq ($(WITH_HOST_DALVIK),true)
     # Build as a WHOLE static library so dependencies are available at link
     # time. When building this target as a regular static library, certain
     # dependencies like expat are not found by the linker.
-    LOCAL_WHOLE_STATIC_LIBRARIES += libexpat libcutils libdex liblog libz
+    LOCAL_WHOLE_STATIC_LIBRARIES += libexpat libcutils libdex liblog libnativehelper libz
 
     # The libffi from the source tree should never be used by host builds.
     # The recommendation is that host builds should always either
@@ -150,12 +124,6 @@ ifeq ($(WITH_HOST_DALVIK),true)
     endif
 
     LOCAL_CFLAGS += $(host_smp_flag)
-    LOCAL_CFLAGS += $(host_inline_arg5_flag)
-    # TODO: split out the asflags.
-    LOCAL_ASFLAGS := $(LOCAL_CFLAGS)
-    ifeq ($(TARGET_ARCH_LOWMEM),true)
-        LOCAL_CFLAGS += -DDALVIK_LOWMEM
-    endif
     LOCAL_MODULE_TAGS := optional
     LOCAL_MODULE := libdvm
 

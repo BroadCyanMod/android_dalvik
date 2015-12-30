@@ -22,6 +22,8 @@ void dvmInterpretPortable(Thread* self)
     /* method call setup */
     const Method* methodToCall;
     bool methodCallRange;
+    bool jumboFormat;
+
 
     /* static computed goto table */
     DEFINE_GOTO_TABLE(handlerTable);

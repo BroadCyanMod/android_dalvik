@@ -39,7 +39,7 @@ static void Dalvik_java_lang_VMClassLoader_defineClass(const u4* args,
     char* name = NULL;
 
     name = dvmCreateCstrFromString(nameObj);
-    ALOGE("ERROR: defineClass(%p, %s, %p, %d, %d)",
+    LOGE("ERROR: defineClass(%p, %s, %p, %d, %d)",
         loader, name, data, offset, len);
     dvmThrowUnsupportedOperationException(
         "can't load this type of class file");
@@ -64,7 +64,7 @@ static void Dalvik_java_lang_VMClassLoader_defineClass2(const u4* args,
     int offset = args[2];
     int len = args[3];
 
-    ALOGE("ERROR: defineClass(%p, %p, %d, %d)",
+    LOGE("ERROR: defineClass(%p, %p, %d, %d)",
         loader, data, offset, len);
     dvmThrowUnsupportedOperationException(
         "can't load this type of class file");

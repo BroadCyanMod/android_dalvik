@@ -123,13 +123,13 @@
 #define ARRAYSIZE(x) (sizeof(x) / sizeof(x[0]))
 
 #if 0
-#define LOG_ALLOC ALOGI
-#define LOG_PIN ALOGI
-#define LOG_PROM ALOGI
-#define LOG_REF ALOGI
-#define LOG_SCAV ALOGI
-#define LOG_TRAN ALOGI
-#define LOG_VER ALOGI
+#define LOG_ALLOC LOGI
+#define LOG_PIN LOGI
+#define LOG_PROM LOGI
+#define LOG_REF LOGI
+#define LOG_SCAV LOGI
+#define LOG_TRAN LOGI
+#define LOG_VER LOGI
 #else
 #define LOG_ALLOC(...) ((void)0)
 #define LOG_PIN(...) ((void)0)
@@ -338,7 +338,7 @@ static void *allocateBlocks(HeapSource *heapSource, size_t blocks)
         return addr;
     }
     /* Insufficient space, fail. */
-    ALOGE("Insufficient space, %zu blocks, %zu blocks allocated and %zu bytes allocated",
+    LOGE("Insufficient space, %zu blocks, %zu blocks allocated and %zu bytes allocated",
          heapSource->totalBlocks,
          heapSource->allocBlocks,
          heapSource->bytesAllocated);
@@ -444,8 +444,9 @@ GcHeap *dvmHeapSourceStartup(size_t startSize, size_t absoluteMaxSize)
 
     assert(startSize <= absoluteMaxSize);
 
-    heapSource = calloc(1, sizeof(*heapSource));
+    heapSource = malloc(sizeof(*heapSource));
     assert(heapSource != NULL);
+    memset(heapSource, 0, sizeof(*heapSource));
 
     heapSource->minimumSize = alignUp(startSize, BLOCK_SIZE);
     heapSource->maximumSize = alignUp(absoluteMaxSize, BLOCK_SIZE);
@@ -461,7 +462,7 @@ GcHeap *dvmHeapSourceStartup(size_t startSize, size_t absoluteMaxSize)
     heapSource->allocBlocks = 0;
     heapSource->totalBlocks = (heapSource->limitBlock - heapSource->baseBlock);
 
-    assert(heapSource->totalBlocks == heapSource->maximumSize / BLOCK_SIZE);
+    assert(heapSource->totalBlocks = heapSource->maximumSize / BLOCK_SIZE);
 
     {
         size_t size = sizeof(heapSource->blockQueue[0]);
@@ -474,8 +475,9 @@ GcHeap *dvmHeapSourceStartup(size_t startSize, size_t absoluteMaxSize)
     /* Byte indicating space residence or free status of block. */
     {
         size_t size = sizeof(heapSource->blockSpace[0]);
-        heapSource->blockSpace = calloc(1, heapSource->totalBlocks*size);
+        heapSource->blockSpace = malloc(heapSource->totalBlocks*size);
         assert(heapSource->blockSpace != NULL);
+        memset(heapSource->blockSpace, 0, heapSource->totalBlocks*size);
     }
 
     dvmHeapBitmapInit(&heapSource->allocBits,
@@ -487,8 +489,9 @@ GcHeap *dvmHeapSourceStartup(size_t startSize, size_t absoluteMaxSize)
     heapSource->allocPtr = allocateBlocks(heapSource, 1);
     heapSource->allocLimit = heapSource->allocPtr + BLOCK_SIZE;
 
-    gcHeap = calloc(1, sizeof(*gcHeap));
+    gcHeap = malloc(sizeof(*gcHeap));
     assert(gcHeap != NULL);
+    memset(gcHeap, 0, sizeof(*gcHeap));
     gcHeap->heapSource = heapSource;
 
     return gcHeap;
@@ -731,8 +734,9 @@ void dvmHeapSourceGrowForUtilization()
     /* do nothing */
 }
 
-void dvmHeapSourceWalk(void(*callback)(void* start, void* end,
-                                       size_t used_bytes, void* arg),
+void dvmHeapSourceWalk(void (*callback)(const void *chunkptr, size_t chunklen,
+                                        const void *userptr, size_t userlen,
+                                        void *arg),
                        void *arg)
 {
     assert(!"implemented");
@@ -996,7 +1000,7 @@ static void enqueueReference(Object *ref)
     assert(dvmGetFieldObject(ref, gDvm.offJavaLangRefReference_queue) != NULL);
     assert(dvmGetFieldObject(ref, gDvm.offJavaLangRefReference_queueNext) == NULL);
     if (!dvmHeapAddRefToLargeTable(&gDvm.gcHeap->referenceOperations, ref)) {
-        ALOGE("no room for any more reference operations");
+        LOGE("no room for any more reference operations");
         dvmAbort();
     }
 }
@@ -1571,13 +1575,13 @@ static void scavengeThreadStack(Thread *thread)
                  * some value.
                  */
                 if (saveArea->xtra.currentPc != thread->currentPc2) {
-                    ALOGW("PGC: savedPC(%p) != current PC(%p), %s.%s ins=%p",
+                    LOGW("PGC: savedPC(%p) != current PC(%p), %s.%s ins=%p",
                         saveArea->xtra.currentPc, thread->currentPc2,
                         method->clazz->descriptor, method->name, method->insns);
                     if (saveArea->xtra.currentPc != NULL)
-                        ALOGE("  pc inst = 0x%04x", *saveArea->xtra.currentPc);
+                        LOGE("  pc inst = 0x%04x", *saveArea->xtra.currentPc);
                     if (thread->currentPc2 != NULL)
-                        ALOGE("  pc2 inst = 0x%04x", *thread->currentPc2);
+                        LOGE("  pc2 inst = 0x%04x", *thread->currentPc2);
                     dvmDumpThread(thread, false);
                 }
             } else {
@@ -1664,7 +1668,7 @@ static void scavengeThreadStack(Thread *thread)
 #if WITH_EXTRA_GC_CHECKS > 0
                         if ((rval & 0x3) != 0 || !dvmIsValidObject((Object*) rval)) {
                             /* this is very bad */
-                            ALOGE("PGC: invalid ref in reg %d: 0x%08x",
+                            LOGE("PGC: invalid ref in reg %d: 0x%08x",
                                 method->registersSize-1 - i, rval);
                         } else
 #endif
@@ -1681,7 +1685,7 @@ static void scavengeThreadStack(Thread *thread)
 #if WITH_EXTRA_GC_CHECKS > 1
                         if (dvmIsValidObject((Object*) rval)) {
                             /* this is normal, but we feel chatty */
-                            ALOGD("PGC: ignoring valid ref in reg %d: 0x%08x",
+                            LOGD("PGC: ignoring valid ref in reg %d: 0x%08x",
                                  method->registersSize-1 - i, rval);
                         }
 #endif
@@ -1809,7 +1813,7 @@ static void pinThreadStack(const Thread *thread)
             const RegisterMap* pMap = dvmGetExpandedRegisterMap(method);
             const u1* regVector = NULL;
 
-            ALOGI("conservative : %s.%s", method->clazz->descriptor, method->name);
+            LOGI("conservative : %s.%s", method->clazz->descriptor, method->name);
 
             if (pMap != NULL) {
                 int addr = saveArea->xtra.currentPc - method->insns;

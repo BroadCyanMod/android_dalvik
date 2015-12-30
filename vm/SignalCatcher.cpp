@@ -65,7 +65,7 @@ void dvmSignalCatcherShutdown()
     pthread_kill(gDvm.signalCatcherHandle, SIGQUIT);
 
     pthread_join(gDvm.signalCatcherHandle, NULL);
-    ALOGV("signal catcher has shut down");
+    LOGV("signal catcher has shut down");
 }
 
 
@@ -120,7 +120,6 @@ static void logThreadStacks(FILE* fp)
         ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
     printProcessName(&target);
     dvmPrintDebugMessage(&target, "\n");
-    dvmDumpJniStats(&target);
     dvmDumpAllThreadsEx(&target, true);
     fprintf(fp, "----- end %d -----\n", pid);
 }
@@ -152,13 +151,12 @@ static void handleSigQuit()
         /* just dump to log */
         DebugOutputTarget target;
         dvmCreateLogOutputTarget(&target, ANDROID_LOG_INFO, LOG_TAG);
-        dvmDumpJniStats(&target);
         dvmDumpAllThreadsEx(&target, true);
     } else {
         /* write to memory buffer */
         FILE* memfp = open_memstream(&traceBuf, &traceLen);
         if (memfp == NULL) {
-            ALOGE("Unable to create memstream for stack traces");
+            LOGE("Unable to create memstream for stack traces");
             traceBuf = NULL;        /* make sure it didn't touch this */
             /* continue on */
         } else {
@@ -188,16 +186,16 @@ static void handleSigQuit()
          */
         int fd = open(gDvm.stackTraceFile, O_WRONLY | O_APPEND | O_CREAT, 0666);
         if (fd < 0) {
-            ALOGE("Unable to open stack trace file '%s': %s",
+            LOGE("Unable to open stack trace file '%s': %s",
                 gDvm.stackTraceFile, strerror(errno));
         } else {
-            ssize_t actual = TEMP_FAILURE_RETRY(write(fd, traceBuf, traceLen));
+            ssize_t actual = write(fd, traceBuf, traceLen);
             if (actual != (ssize_t) traceLen) {
-                ALOGE("Failed to write stack traces to %s (%d of %zd): %s",
+                LOGE("Failed to write stack traces to %s (%d of %zd): %s",
                     gDvm.stackTraceFile, (int) actual, traceLen,
                     strerror(errno));
             } else {
-                ALOGI("Wrote stack traces to '%s'", gDvm.stackTraceFile);
+                LOGI("Wrote stack traces to '%s'", gDvm.stackTraceFile);
             }
             close(fd);
         }
@@ -212,7 +210,7 @@ static void handleSigQuit()
  */
 static void handleSigUsr1()
 {
-    ALOGI("SIGUSR1 forcing GC (no HPROF)");
+    LOGI("SIGUSR1 forcing GC (no HPROF)");
     dvmCollectGarbage();
 }
 
@@ -221,7 +219,7 @@ static void handleSigUsr1()
 void printAllClass(void *ptr)
 {
     ClassObject **classPP = (ClassObject **) ptr;
-    ALOGE("class %s", (*classPP)->descriptor);
+    LOGE("class %s", (*classPP)->descriptor);
 
 }
 
@@ -241,7 +239,7 @@ static void handleSigUsr2()
         dvmCompilerDumpStats();
         /* Stress-test unchain all */
         dvmJitUnchainAll();
-        ALOGD("Send %d more signals to reset the code cache",
+        LOGD("Send %d more signals to reset the code cache",
              codeCacheResetCount & 7);
     }
     dvmCheckInterpStateConsistency();
@@ -259,7 +257,7 @@ static void* signalCatcherThreadStart(void* arg)
 
     UNUSED_PARAMETER(arg);
 
-    ALOGV("Signal catcher thread started (threadid=%d)", self->threadId);
+    LOGV("Signal catcher thread started (threadid=%d)", self->threadId);
 
     /* set up mask with signals we want to handle */
     sigemptyset(&mask);
@@ -287,14 +285,14 @@ loop:
         cc = sigwait(&mask, &rcvd);
         if (cc != 0) {
             if (cc == EINTR) {
-                //ALOGV("sigwait: EINTR");
+                //LOGV("sigwait: EINTR");
                 goto loop;
             }
             assert(!"bad result from sigwait");
         }
 
         if (!gDvm.haltSignalCatcher) {
-            ALOGI("threadid=%d: reacting to signal %d",
+            LOGI("threadid=%d: reacting to signal %d",
                 dvmThreadSelf()->threadId, rcvd);
         }
 
@@ -317,7 +315,7 @@ loop:
             break;
 #endif
         default:
-            ALOGE("unexpected signal %d", rcvd);
+            LOGE("unexpected signal %d", rcvd);
             break;
         }
     }

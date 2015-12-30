@@ -186,9 +186,6 @@ public class Main {
         // Reset the error/warning count to start fresh.
         warnings = 0;
         errors = 0;
-        // empty the list, so that  tools that load dx and keep it around
-        // for multiple runs don't reuse older buffers.
-        libraryDexBuffers.clear();
 
         args = arguments;
         args.makeOptionsObjects();
@@ -300,7 +297,6 @@ public class Main {
             DexBuffer ab = new DexMerger(a, b, CollisionPolicy.FAIL).merge();
             outArray = ab.getBytes();
         }
-
         return outArray;
     }
 
@@ -934,10 +930,6 @@ public class Main {
         /** whether to merge with the output dex file if it exists. */
         public boolean incremental = false;
 
-        /** whether to force generation of const-string/jumbo for all indexes,
-         *  to allow merges between dex files with many strings. */
-        public boolean forceJumbo = false;
-
         /** {@code non-null} after {@link #parse}; file name arguments */
         public String[] fileNames;
 
@@ -1144,8 +1136,6 @@ public class Main {
                     numThreads = Integer.parseInt(parser.getLastValue());
                 } else if (parser.isArg("--incremental")) {
                     incremental = true;
-                } else if (parser.isArg("--force-jumbo")) {
-                    forceJumbo = true;
                 } else {
                     System.err.println("unknown option: " + parser.getCurrent());
                     throw new UsageException();
@@ -1186,7 +1176,6 @@ public class Main {
 
             dexOptions = new DexOptions();
             dexOptions.targetApiLevel = targetApiLevel;
-            dexOptions.forceJumbo = forceJumbo;
         }
     }
 

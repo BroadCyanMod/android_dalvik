@@ -33,7 +33,7 @@ static bool initClassReference(ClassObject** pClass, const char* name) {
     }
 
     if (result == NULL) {
-        ALOGE("Could not find essential class %s", name);
+        LOGE("Could not find essential class %s", name);
         return false;
     }
 
@@ -104,7 +104,6 @@ static bool initClassReferences() {
         { &gDvm.exNoSuchFieldException,            "Ljava/lang/NoSuchFieldException;" },
         { &gDvm.exNoSuchMethodError,               "Ljava/lang/NoSuchMethodError;" },
         { &gDvm.exNullPointerException,            "Ljava/lang/NullPointerException;" },
-        { &gDvm.exNumberFormatException,           "Ljava/lang/NumberFormatException;" },
         { &gDvm.exOutOfMemoryError,                "Ljava/lang/OutOfMemoryError;" },
         { &gDvm.exRuntimeException,                "Ljava/lang/RuntimeException;" },
         { &gDvm.exStackOverflowError,              "Ljava/lang/StackOverflowError;" },
@@ -128,7 +127,7 @@ static bool initClassReferences() {
         { &gDvm.classJavaLangReflectMethod,             "Ljava/lang/reflect/Method;" },
         { &gDvm.classJavaLangReflectMethodArray,        "[Ljava/lang/reflect/Method;"},
         { &gDvm.classJavaLangReflectProxy,              "Ljava/lang/reflect/Proxy;" },
-        { &gDvm.classJavaNioDirectByteBuffer,           "Ljava/nio/DirectByteBuffer;" },
+        { &gDvm.classJavaNioReadWriteDirectByteBuffer,  "Ljava/nio/ReadWriteDirectByteBuffer;" },
         { &gDvm.classOrgApacheHarmonyDalvikDdmcChunk,
           "Lorg/apache/harmony/dalvik/ddmc/Chunk;" },
         { &gDvm.classOrgApacheHarmonyDalvikDdmcDdmServer,
@@ -157,7 +156,7 @@ static bool initFieldOffset(ClassObject* clazz, int *pOffset,
         const char* name, const char* type) {
     int offset = dvmFindFieldOffset(clazz, name, type);
     if (offset < 0) {
-        ALOGE("Could not find essential field %s.%s of type %s", clazz->descriptor, name, type);
+        LOGE("Could not find essential field %s.%s of type %s", clazz->descriptor, name, type);
         return false;
     }
 
@@ -252,7 +251,7 @@ static bool initFieldOffsets() {
 
     static struct FieldInfo infoBuffer[] = {
         { &gDvm.offJavaNioBuffer_capacity,               "capacity",               "I" },
-        { &gDvm.offJavaNioBuffer_effectiveDirectAddress, "effectiveDirectAddress", "J" },
+        { &gDvm.offJavaNioBuffer_effectiveDirectAddress, "effectiveDirectAddress", "I" },
         { NULL, NULL, NULL }
     };
 
@@ -280,7 +279,7 @@ static bool initFieldOffsets() {
         const struct FieldInfo* fields = classes[i].fields;
 
         if (clazz == NULL) {
-            ALOGE("Could not find essential class %s for field lookup", className);
+            LOGE("Could not find essential class %s for field lookup", className);
             return false;
         }
 
@@ -300,7 +299,7 @@ static bool initDirectMethodReferenceByClass(Method** pMethod, ClassObject* claz
     Method* method = dvmFindDirectMethodByDescriptor(clazz, name, descriptor);
 
     if (method == NULL) {
-        ALOGE("Could not find essential direct method %s.%s with descriptor %s",
+        LOGE("Could not find essential direct method %s.%s with descriptor %s",
                 clazz->descriptor, name, descriptor);
         return false;
     }
@@ -314,7 +313,7 @@ static bool initDirectMethodReference(Method** pMethod, const char* className,
     ClassObject* clazz = dvmFindSystemClassNoInit(className);
 
     if (clazz == NULL) {
-        ALOGE("Could not find essential class %s for direct method lookup", className);
+        LOGE("Could not find essential class %s for direct method lookup", className);
         return false;
     }
 
@@ -332,8 +331,8 @@ static bool initConstructorReferences() {
         { &gDvm.methJavaLangReflectMethod_init, "Ljava/lang/reflect/Method;",
           "(Ljava/lang/Class;[Ljava/lang/Class;[Ljava/lang/Class;Ljava/lang/Class;"
           "Ljava/lang/String;I)V" },
-        { &gDvm.methJavaNioDirectByteBuffer_init, "Ljava/nio/DirectByteBuffer;",
-          "(JI)V" },
+        { &gDvm.methJavaNioReadWriteDirectByteBuffer_init, "Ljava/nio/ReadWriteDirectByteBuffer;",
+          "(II)V" },
         { &gDvm.methOrgApacheHarmonyLangAnnotationAnnotationMember_init,
           "Lorg/apache/harmony/lang/annotation/AnnotationMember;",
           "(Ljava/lang/String;Ljava/lang/Object;Ljava/lang/Class;Ljava/lang/reflect/Method;)V" },
@@ -397,14 +396,14 @@ static bool initVirtualMethodOffset(int* pOffset, const char* className,
     ClassObject* clazz = dvmFindSystemClassNoInit(className);
 
     if (clazz == NULL) {
-        ALOGE("Could not find essential class %s for virtual method lookup", className);
+        LOGE("Could not find essential class %s for virtual method lookup", className);
         return false;
     }
 
     Method* method = dvmFindVirtualMethodByDescriptor(clazz, name, descriptor);
 
     if (method == NULL) {
-        ALOGE("Could not find essential virtual method %s.%s with descriptor %s",
+        LOGE("Could not find essential virtual method %s.%s with descriptor %s",
                 clazz->descriptor, name, descriptor);
         return false;
     }
@@ -453,7 +452,7 @@ static bool initFinalizerReference()
 
 static bool verifyStringOffset(const char* name, int actual, int expected) {
     if (actual != expected) {
-        ALOGE("InitRefs: String.%s offset = %d; expected %d", name, actual, expected);
+        LOGE("InitRefs: String.%s offset = %d; expected %d", name, actual, expected);
         return false;
     }
 
@@ -478,10 +477,6 @@ static bool verifyStringOffsets() {
     return ok;
 }
 
-__attribute__((weak)) bool verifyExtra(){
-    return true;
-}
-
 /* (documented in header) */
 bool dvmFindRequiredClassesAndMembers() {
     /*
@@ -496,14 +491,13 @@ bool dvmFindRequiredClassesAndMembers() {
         && initDirectMethodReferences()
         && initVirtualMethodOffsets()
         && initFinalizerReference()
-        && verifyStringOffsets()
-        && verifyExtra();
+        && verifyStringOffsets();
 }
 
 /* (documented in header) */
 bool dvmFindReferenceMembers(ClassObject* classReference) {
     if (strcmp(classReference->descriptor, "Ljava/lang/ref/Reference;") != 0) {
-        ALOGE("Attempt to set up the wrong class as Reference");
+        LOGE("Attempt to set up the wrong class as Reference");
         return false;
     }
     return initFieldOffset(classReference, &gDvm.offJavaLangRefReference_pendingNext,

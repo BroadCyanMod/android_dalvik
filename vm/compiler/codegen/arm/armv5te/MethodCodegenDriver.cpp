@@ -16,6 +16,6 @@
 
 void dvmCompilerMethodMIR2LIR(CompilationUnit *cUnit)
 {
-    ALOGE("Method-based JIT not supported for the v5te target");
+    LOGE("Method-based JIT not supported for the v5te target");
     dvmAbort();
 }

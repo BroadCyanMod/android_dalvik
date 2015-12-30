@@ -96,7 +96,6 @@
      */
 .L${opcode}_notimpl:
     ldr     r0, .L_strFilledNewArrayNotImpl_${opcode}
-3:  add     r0, pc
     bl      dvmThrowInternalError
     b       common_exceptionThrown
 
@@ -106,4 +105,4 @@
      */
 
 .L_strFilledNewArrayNotImpl_${opcode}:
-    .word   PCREL_REF(.LstrFilledNewArrayNotImpl,3b)
+    .word   .LstrFilledNewArrayNotImpl

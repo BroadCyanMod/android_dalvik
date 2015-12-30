@@ -26,11 +26,11 @@
 static void dumpConstants(CompilationUnit *cUnit)
 {
     int i;
-    ALOGE("LOOP starting offset: %x", cUnit->entryBlock->startOffset);
+    LOGE("LOOP starting offset: %x", cUnit->entryBlock->startOffset);
     for (i = 0; i < cUnit->numSSARegs; i++) {
         if (dvmIsBitSet(cUnit->isConstantV, i)) {
             int subNReg = dvmConvertSSARegToDalvik(cUnit, i);
-            ALOGE("CONST: s%d(v%d_%d) has %d", i,
+            LOGE("CONST: s%d(v%d_%d) has %d", i,
                  DECODE_REG(subNReg), DECODE_SUB(subNReg),
                  cUnit->constantValues[i]);
         }
@@ -48,7 +48,7 @@ static void dumpIVList(CompilationUnit *cUnit)
         int iv = dvmConvertSSARegToDalvik(cUnit, ivInfo->ssaReg);
         /* Basic IV */
         if (ivInfo->ssaReg == ivInfo->basicSSAReg) {
-            ALOGE("BIV %d: s%d(v%d_%d) + %d", i,
+            LOGE("BIV %d: s%d(v%d_%d) + %d", i,
                  ivInfo->ssaReg,
                  DECODE_REG(iv), DECODE_SUB(iv),
                  ivInfo->inc);
@@ -56,7 +56,7 @@ static void dumpIVList(CompilationUnit *cUnit)
         } else {
             int biv = dvmConvertSSARegToDalvik(cUnit, ivInfo->basicSSAReg);
 
-            ALOGE("DIV %d: s%d(v%d_%d) = %d * s%d(v%d_%d) + %d", i,
+            LOGE("DIV %d: s%d(v%d_%d) = %d * s%d(v%d_%d) + %d", i,
                  ivInfo->ssaReg,
                  DECODE_REG(iv), DECODE_SUB(iv),
                  ivInfo->m,
@@ -80,13 +80,13 @@ static void dumpHoistedChecks(CompilationUnit *cUnit)
             dvmConvertSSARegToDalvik(cUnit, arrayAccessInfo->arrayReg));
         int idxReg = DECODE_REG(
             dvmConvertSSARegToDalvik(cUnit, arrayAccessInfo->ivReg));
-        ALOGE("Array access %d", i);
-        ALOGE("  arrayReg %d", arrayReg);
-        ALOGE("  idxReg %d", idxReg);
-        ALOGE("  endReg %d", loopAnalysis->endConditionReg);
-        ALOGE("  maxC %d", arrayAccessInfo->maxC);
-        ALOGE("  minC %d", arrayAccessInfo->minC);
-        ALOGE("  opcode %d", loopAnalysis->loopBranchOpcode);
+        LOGE("Array access %d", i);
+        LOGE("  arrayReg %d", arrayReg);
+        LOGE("  idxReg %d", idxReg);
+        LOGE("  endReg %d", loopAnalysis->endConditionReg);
+        LOGE("  maxC %d", arrayAccessInfo->maxC);
+        LOGE("  minC %d", arrayAccessInfo->minC);
+        LOGE("  opcode %d", loopAnalysis->loopBranchOpcode);
     }
 }
 
@@ -149,7 +149,7 @@ static Opcode negateOpcode(Opcode opcode)
         case OP_IF_LEZ:
             return OP_IF_GTZ;
         default:
-            ALOGE("opcode %d cannot be negated", opcode);
+            LOGE("opcode %d cannot be negated", opcode);
             dvmAbort();
             break;
     }
@@ -339,15 +339,6 @@ static void updateRangeCheckInfo(CompilationUnit *cUnit, int arrayReg,
     }
 }
 
-__attribute__((weak)) void dvmCompilerDumpMIRInCodeMotion(CompilationUnit *cUnit, MIR *mir)
-{
-    if(cUnit->printMe){
-        DecodedInstruction *decInsn = &(mir->dalvikInsn);
-        char *decodedString = dvmCompilerGetDalvikDisassembly(decInsn, NULL);
-        ALOGD("%#06x %s", decInsn->opcode, decodedString);
-    }
-}
-
 /* Returns true if the loop body cannot throw any exceptions */
 static bool doLoopBodyCodeMotion(CompilationUnit *cUnit)
 {
@@ -358,7 +349,7 @@ static bool doLoopBodyCodeMotion(CompilationUnit *cUnit)
     for (mir = loopBody->firstMIRInsn; mir; mir = mir->next) {
         DecodedInstruction *dInsn = &mir->dalvikInsn;
         int dfAttributes =
-            dvmGetDexOptAttributes(&mir->dalvikInsn);
+            dvmCompilerDataFlowAttributes[mir->dalvikInsn.opcode];
 
         /* Skip extended MIR instructions */
         if (dInsn->opcode >= kNumPackedOpcodes) continue;
@@ -400,7 +391,7 @@ static bool doLoopBodyCodeMotion(CompilationUnit *cUnit)
                     break;
                 default:
                     refIdx = 0;
-                    ALOGE("Jit: bad case in doLoopBodyCodeMotion");
+                    LOGE("Jit: bad case in doLoopBodyCodeMotion");
                     dvmCompilerAbort(cUnit);
             }
 
@@ -429,7 +420,6 @@ static bool doLoopBodyCodeMotion(CompilationUnit *cUnit)
                 updateRangeCheckInfo(cUnit, mir->ssaRep->uses[refIdx],
                                      mir->ssaRep->uses[useIdx]);
             }
-            dvmCompilerDumpMIRInCodeMotion(cUnit, mir);
         }
     }
 
@@ -514,11 +504,10 @@ static void genHoistedChecks(CompilationUnit *cUnit)
                     dvmCompilerAppendMIR(entry, boundCheckMIR);
                 }
             } else {
-                ALOGE("Jit: bad case in genHoistedChecks");
+                LOGE("Jit: bad case in genHoistedChecks");
                 dvmCompilerAbort(cUnit);
             }
         }
-        cUnit->hasHoistedChecks=true;
     }
 }
 
@@ -678,62 +667,6 @@ bool dvmCompilerFilterLoopBlocks(CompilationUnit *cUnit)
     return true;
 }
 
-__attribute__((weak)) void dvmCompilerDumpIVList(CompilationUnit *cUnit)
-{
-    unsigned int i;
-    GrowableList *ivList = cUnit->loopAnalysis->ivList;
-
-    if(cUnit->printMe){
-        for (i = 0; i < ivList->numUsed; i++) {
-            InductionVariableInfo *ivInfo =
-                (InductionVariableInfo *) ivList->elemList[i];
-            int iv = dvmConvertSSARegToDalvik(cUnit, ivInfo->ssaReg);
-            /* Basic IV */
-            if (ivInfo->ssaReg == ivInfo->basicSSAReg) {
-                ALOGD("BIV %d: s%d(v%d_%d) + %d", i,
-                    ivInfo->ssaReg,
-                    DECODE_REG(iv), DECODE_SUB(iv),
-                    ivInfo->inc);
-            /* Dependent IV */
-            } else {
-                int biv = dvmConvertSSARegToDalvik(cUnit, ivInfo->basicSSAReg);
-
-                ALOGD("DIV %d: s%d(v%d_%d) = %d * s%d(v%d_%d) + %d", i,
-                    ivInfo->ssaReg,
-                    DECODE_REG(iv), DECODE_SUB(iv),
-                    ivInfo->m,
-                    ivInfo->basicSSAReg,
-                    DECODE_REG(biv), DECODE_SUB(biv),
-                    ivInfo->c);
-            }
-        }
-    }
-}
-
-__attribute__((weak)) void dvmCompilerDumpHoistedChecks(CompilationUnit *cUnit)
-{
-    LoopAnalysis *loopAnalysis = cUnit->loopAnalysis;
-    unsigned int i;
-    if(cUnit->printMe){
-        for (i = 0; i < loopAnalysis->arrayAccessInfo->numUsed; i++) {
-            ArrayAccessInfo *arrayAccessInfo =
-                GET_ELEM_N(loopAnalysis->arrayAccessInfo,
-                           ArrayAccessInfo*, i);
-            int arrayReg = DECODE_REG(
-                dvmConvertSSARegToDalvik(cUnit, arrayAccessInfo->arrayReg));
-            int idxReg = DECODE_REG(
-                dvmConvertSSARegToDalvik(cUnit, arrayAccessInfo->ivReg));
-            ALOGD("Array access %d", i);
-            ALOGD("  arrayReg %d", arrayReg);
-            ALOGD("  idxReg %d", idxReg);
-            ALOGD("  endReg %d", loopAnalysis->endConditionReg);
-            ALOGD("  maxC %d", arrayAccessInfo->maxC);
-            ALOGD("  minC %d", arrayAccessInfo->minC);
-            ALOGD("  opcode %d", loopAnalysis->loopBranchOpcode);
-        }
-    }
-}
-
 /*
  * Main entry point to do loop optimization.
  * Return false if sanity checks for loop formation/optimization failed.
@@ -745,7 +678,7 @@ bool dvmCompilerLoopOpt(CompilationUnit *cUnit)
     cUnit->loopAnalysis = loopAnalysis;
 
     /* Constant propagation */
-    cUnit->isConstantV = dvmCompilerAllocBitVector(cUnit->numSSARegs, false);
+    cUnit->isConstantV = dvmAllocBitVector(cUnit->numSSARegs, false);
     cUnit->constantValues =
         (int *)dvmCompilerNew(sizeof(int) * cUnit->numSSARegs,
                               true);
@@ -759,14 +692,12 @@ bool dvmCompilerLoopOpt(CompilationUnit *cUnit)
     loopAnalysis->ivList =
         (GrowableList *)dvmCompilerNew(sizeof(GrowableList), true);
     dvmInitGrowableList(loopAnalysis->ivList, 4);
-    loopAnalysis->isIndVarV = dvmCompilerAllocBitVector(cUnit->numSSARegs, false);
+    loopAnalysis->isIndVarV = dvmAllocBitVector(cUnit->numSSARegs, false);
     dvmCompilerDataFlowAnalysisDispatcher(cUnit,
                                           dvmCompilerFindInductionVariables,
                                           kAllNodes,
                                           false /* isIterative */);
     DEBUG_LOOP(dumpIVList(cUnit);)
-
-    dvmCompilerDumpIVList(cUnit);
 
     /* Only optimize array accesses for simple counted loop for now */
     if (!isSimpleCountedLoop(cUnit))
@@ -783,7 +714,6 @@ bool dvmCompilerLoopOpt(CompilationUnit *cUnit)
      * header.
      */
     genHoistedChecks(cUnit);
-    dvmCompilerDumpHoistedChecks(cUnit);
     return true;
 }
 
@@ -798,15 +728,12 @@ void dvmCompilerInsertBackwardChaining(CompilationUnit *cUnit)
      * code will be generated along the backward branch to honor the suspend
      * requests.
      */
-#ifndef ARCH_IA32
 #if !defined(WITH_SELF_VERIFICATION)
     if (gDvmJit.profileMode != kTraceProfilingContinuous &&
         gDvmJit.profileMode != kTraceProfilingPeriodicOn) {
         return;
     }
 #endif
-#endif
-
     /*
      * In self-verification or profiling mode, the backward branch is altered
      * to go to the backward chaining cell. Without using the backward chaining

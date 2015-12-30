@@ -19,8 +19,6 @@ package com.android.dx.io;
 import com.android.dx.dex.DexFormat;
 import com.android.dx.dex.SizeOf;
 import com.android.dx.dex.TableOfContents;
-import com.android.dx.io.Code.CatchHandler;
-import com.android.dx.io.Code.Try;
 import com.android.dx.merge.TypeList;
 import com.android.dx.util.ByteInput;
 import com.android.dx.util.ByteOutput;
@@ -219,7 +217,7 @@ public final class DexBuffer {
         return length;
     }
 
-    public static int fourByteAlign(int position) {
+    private static int fourByteAlign(int position) {
         return (position + 3) & ~3;
     }
 
@@ -364,10 +362,6 @@ public final class DexBuffer {
             return Leb128Utils.readUnsignedLeb128(this);
         }
 
-        public int readUleb128p1() {
-            return Leb128Utils.readUnsignedLeb128(this) - 1;
-        }
-
         public int readSleb128() {
             return Leb128Utils.readSignedLeb128(this);
         }
@@ -445,64 +439,31 @@ public final class DexBuffer {
             int debugInfoOffset = readInt();
             int instructionsSize = readInt();
             short[] instructions = readShortArray(instructionsSize);
-            Try[] tries;
-            CatchHandler[] catchHandlers;
+            Code.Try[] tries = new Code.Try[triesSize];
+            Code.CatchHandler[] catchHandlers = new Code.CatchHandler[0];
             if (triesSize > 0) {
                 if (instructions.length % 2 == 1) {
                     readShort(); // padding
                 }
 
-                /*
-                 * We can't read the tries until we've read the catch handlers.
-                 * Unfortunately they're in the opposite order in the dex file
-                 * so we need to read them out-of-order.
-                 */
-                Section triesSection = open(position);
-                skip(triesSize * SizeOf.TRY_ITEM);
-                catchHandlers = readCatchHandlers();
-                tries = triesSection.readTries(triesSize, catchHandlers);
-            } else {
-                tries = new Try[0];
-                catchHandlers = new CatchHandler[0];
+                for (int i = 0; i < triesSize; i++) {
+                    int startAddress = readInt();
+                    int instructionCount = readUnsignedShort();
+                    int handlerOffset = readUnsignedShort();
+                    tries[i] = new Code.Try(startAddress, instructionCount, handlerOffset);
+                }
+
+                int catchHandlersSize = readUleb128();
+                catchHandlers = new Code.CatchHandler[catchHandlersSize];
+                for (int i = 0; i < catchHandlersSize; i++) {
+                    catchHandlers[i] = readCatchHandler();
+                }
             }
             return new Code(registersSize, insSize, outsSize, debugInfoOffset, instructions,
                     tries, catchHandlers);
         }
 
-        private CatchHandler[] readCatchHandlers() {
-            int baseOffset = position;
-            int catchHandlersSize = readUleb128();
-            CatchHandler[] result = new CatchHandler[catchHandlersSize];
-            for (int i = 0; i < catchHandlersSize; i++) {
-                int offset = position - baseOffset;
-                result[i] = readCatchHandler(offset);
-            }
-            return result;
-        }
-
-        private Try[] readTries(int triesSize, CatchHandler[] catchHandlers) {
-            Try[] result = new Try[triesSize];
-            for (int i = 0; i < triesSize; i++) {
-                int startAddress = readInt();
-                int instructionCount = readUnsignedShort();
-                int handlerOffset = readUnsignedShort();
-                int catchHandlerIndex = findCatchHandlerIndex(catchHandlers, handlerOffset);
-                result[i] = new Try(startAddress, instructionCount, catchHandlerIndex);
-            }
-            return result;
-        }
-
-        private int findCatchHandlerIndex(CatchHandler[] catchHandlers, int offset) {
-            for (int i = 0; i < catchHandlers.length; i++) {
-                CatchHandler catchHandler = catchHandlers[i];
-                if (catchHandler.getOffset() == offset) {
-                    return i;
-                }
-            }
-            throw new IllegalArgumentException();
-        }
-
-        private CatchHandler readCatchHandler(int offset) {
+        private Code.CatchHandler readCatchHandler() {
             int size = readSleb128();
             int handlersCount = Math.abs(size);
             int[] typeIndexes = new int[handlersCount];
@@ -512,7 +473,7 @@ public final class DexBuffer {
                 addresses[i] = readUleb128();
             }
             int catchAllAddress = size <= 0 ? readUleb128() : -1;
-            return new CatchHandler(typeIndexes, addresses, catchAllAddress, offset);
+            return new Code.CatchHandler(typeIndexes, addresses, catchAllAddress);
         }
 
         private ClassData readClassData() {
@@ -583,14 +544,6 @@ public final class DexBuffer {
             }
         }
 
-        public void skip(int count) {
-            if (count < 0) {
-                throw new IllegalArgumentException();
-            }
-            ensureCapacity(count);
-            position += count;
-        }
-
         /**
          * Writes 0x00 until the position is aligned to a multiple of 4.
          */
@@ -656,10 +609,6 @@ public final class DexBuffer {
             } catch (ArrayIndexOutOfBoundsException e) {
                 throw new DexException("Section limit " + limit + " exceeded by " + name);
             }
-        }
-
-        public void writeUleb128p1(int i) {
-            writeUleb128(i + 1);
         }
 
         public void writeSleb128(int i) {

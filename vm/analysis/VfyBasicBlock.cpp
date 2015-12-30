@@ -133,7 +133,7 @@ static bool addToPredecessor(VerifierData* vdata, VfyBasicBlock* curBlock,
          * (pointless) conditional branch to the next instruction will
          * trip over this.
          */
-        ALOGV("ODD: point set for targ=0x%04x (%p) already had block "
+        LOGV("ODD: point set for targ=0x%04x (%p) already had block "
              "fir=0x%04x (%p)",
             targetIdx, targetBlock, curBlock->firstAddr, curBlock);
     }
@@ -178,6 +178,11 @@ static bool setPredecessors(VerifierData* vdata, VfyBasicBlock* curBlock,
         gotBranch = dvmGetBranchOffset(meth, insnFlags, curIdx,
                 &branchOffset, &unused);
         assert(gotBranch);
+#ifdef NDEBUG
+        // assert is optimized out, leaving gotBranch defined but
+        // not used, causing a compiler warning -> error on -Werror
+        (void)gotBranch;
+#endif
         absOffset = curIdx + branchOffset;
         assert(absOffset >= 0 && (u4) absOffset < vdata->insnsSize);
 
@@ -228,7 +233,7 @@ static bool setPredecessors(VerifierData* vdata, VfyBasicBlock* curBlock,
 
     if (false) {
         if (dvmPointerSetGetCount(curBlock->predecessors) > 256) {
-            ALOGI("Lots of preds at 0x%04x in %s.%s:%s", curIdx,
+            LOGI("Lots of preds at 0x%04x in %s.%s:%s", curIdx,
                 meth->clazz->descriptor, meth->name, meth->shorty);
         }
     }
@@ -245,7 +250,7 @@ static void dumpBasicBlocks(const VerifierData* vdata)
     unsigned int idx;
     int count;
 
-    ALOGI("Basic blocks for %s.%s:%s", vdata->method->clazz->descriptor,
+    LOGI("Basic blocks for %s.%s:%s", vdata->method->clazz->descriptor,
         vdata->method->name, vdata->method->shorty);
     for (idx = 0; idx < vdata->insnsSize; idx++) {
         VfyBasicBlock* block = vdata->basicBlocks[idx];
@@ -280,7 +285,7 @@ static void dumpBasicBlocks(const VerifierData* vdata)
         printBuf[sizeof(printBuf)-2] = '!';
         printBuf[sizeof(printBuf)-1] = '\0';
 
-        ALOGI("%s", printBuf);
+        LOGI("%s", printBuf);
     }
 
     usleep(100 * 1000);      /* ugh...let logcat catch up */
@@ -309,7 +314,7 @@ bool dvmComputeVfyBasicBlocks(VerifierData* vdata)
 
     bool verbose = false; //dvmWantVerboseVerification(meth);
     if (verbose) {
-        ALOGI("Basic blocks for %s.%s:%s",
+        LOGI("Basic blocks for %s.%s:%s",
             meth->clazz->descriptor, meth->name, meth->shorty);
     }
 
@@ -382,7 +387,7 @@ bool dvmComputeVfyBasicBlocks(VerifierData* vdata)
                 if (numHandlers <= kHandlerStackAllocSize) {
                     handlerList = handlerAddrs;
                 } else {
-                    ALOGD("overflow, numHandlers=%d", numHandlers);
+                    LOGD("overflow, numHandlers=%d", numHandlers);
                     handlerListAlloc = (u4*) malloc(sizeof(u4) * numHandlers);
                     if (handlerListAlloc == NULL)
                         return false;
@@ -391,7 +396,7 @@ bool dvmComputeVfyBasicBlocks(VerifierData* vdata)
                     handlerList = handlerListAlloc;
                 }
 
-                ALOGV("+++ start=%x end=%x numHan=%d",
+                LOGV("+++ start=%x end=%x numHan=%d",
                     tryStart, tryEnd, numHandlers);
 
                 tryIndex++;
@@ -473,11 +478,11 @@ bool dvmComputeVfyBasicBlocks(VerifierData* vdata)
             else
                 startEnd = "-";
 
-            ALOGI("%04x: %c%c%s #%d", idx, tryc, btc, startEnd, debugBBIndex);
+            LOGI("%04x: %c%c%s #%d", idx, tryc, btc, startEnd, debugBBIndex);
 
             if (pTries != NULL && idx == tryStart) {
                 assert(numHandlers > 0);
-                ALOGI("  EXC block: [%04x, %04x) %d:(%04x...)",
+                LOGI("  EXC block: [%04x, %04x) %d:(%04x...)",
                     tryStart, tryEnd, numHandlers, handlerList[0]);
             }
         }

@@ -133,7 +133,7 @@ bool dvmPointerSetAddEntry(PointerSet* pSet, const void* ptr)
         LOGVV("expanding %p to %d", pSet, pSet->alloc);
         newList = (const void**)realloc(pSet->list, pSet->alloc * sizeof(void*));
         if (newList == NULL) {
-            ALOGE("Failed expanding ptr set (alloc=%d)", pSet->alloc);
+            LOGE("Failed expanding ptr set (alloc=%d)", pSet->alloc);
             dvmAbort();
         }
         pSet->list = newList;
@@ -148,14 +148,14 @@ bool dvmPointerSetAddEntry(PointerSet* pSet, const void* ptr)
          * terminated "above" or "below" the value.
          */
         if (nearby != 0 && ptr < pSet->list[nearby-1]) {
-            //ALOGD("nearby-1=%d %p, inserting %p at -1",
+            //LOGD("nearby-1=%d %p, inserting %p at -1",
             //    nearby-1, pSet->list[nearby-1], ptr);
             nearby--;
         } else if (ptr < pSet->list[nearby]) {
-            //ALOGD("nearby=%d %p, inserting %p at +0",
+            //LOGD("nearby=%d %p, inserting %p at +0",
             //    nearby, pSet->list[nearby], ptr);
         } else {
-            //ALOGD("nearby+1=%d %p, inserting %p at +1",
+            //LOGD("nearby+1=%d %p, inserting %p at +1",
             //    nearby+1, pSet->list[nearby+1], ptr);
             nearby++;
         }
@@ -267,8 +267,8 @@ void dvmPointerSetIntersect(PointerSet* pSet, const void** ptrArray, int count)
  */
 void dvmPointerSetDump(const PointerSet* pSet)
 {
-    ALOGI("PointerSet %p", pSet);
+    LOGI("PointerSet %p", pSet);
     int i;
     for (i = 0; i < pSet->count; i++)
-        ALOGI(" %2d: %p", i, pSet->list[i]);
+        LOGI(" %2d: %p", i, pSet->list[i]);
 }

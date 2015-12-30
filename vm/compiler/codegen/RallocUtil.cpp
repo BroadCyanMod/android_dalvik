@@ -71,13 +71,13 @@ extern void dvmCompilerInitPool(RegisterInfo *regs, int *regNums, int num)
 static void dumpRegPool(RegisterInfo *p, int numRegs)
 {
     int i;
-    ALOGE("================================================");
+    LOGE("================================================");
     for (i=0; i < numRegs; i++ ){
-        ALOGE("R[%d]: U:%d, P:%d, part:%d, LV:%d, D:%d, SR:%d, ST:%x, EN:%x",
+        LOGE("R[%d]: U:%d, P:%d, part:%d, LV:%d, D:%d, SR:%d, ST:%x, EN:%x",
            p[i].reg, p[i].inUse, p[i].pair, p[i].partner, p[i].live,
            p[i].dirty, p[i].sReg,(int)p[i].defStart, (int)p[i].defEnd);
     }
-    ALOGE("================================================");
+    LOGE("================================================");
 }
 
 static RegisterInfo *getRegInfo(CompilationUnit *cUnit, int reg)
@@ -97,7 +97,7 @@ static RegisterInfo *getRegInfo(CompilationUnit *cUnit, int reg)
             return &p[i];
         }
     }
-    ALOGE("Tried to get info on a non-existant temp: r%d",reg);
+    LOGE("Tried to get info on a non-existant temp: r%d",reg);
     dvmCompilerAbort(cUnit);
     return NULL;
 }
@@ -223,7 +223,7 @@ static int allocTempBody(CompilationUnit *cUnit, RegisterInfo *p, int numTemps,
         next++;
     }
     if (required) {
-        ALOGE("No free temp registers");
+        LOGE("No free temp registers");
         dvmCompilerAbort(cUnit);
     }
     return -1;  // No register available
@@ -272,7 +272,7 @@ extern int dvmCompilerAllocTempDouble(CompilationUnit *cUnit)
         }
         next += 2;
     }
-    ALOGE("No free temp registers");
+    LOGE("No free temp registers");
     dvmCompilerAbort(cUnit);
     return -1;
 }
@@ -333,7 +333,7 @@ static RegisterInfo *allocLive(CompilationUnit *cUnit, int sReg,
                                 cUnit->regPool->numFPTemps, sReg);
             break;
         default:
-            ALOGE("Invalid register type");
+            LOGE("Invalid register type");
             dvmCompilerAbort(cUnit);
     }
     return res;
@@ -360,7 +360,7 @@ extern void dvmCompilerFreeTemp(CompilationUnit *cUnit, int reg)
             return;
         }
     }
-    ALOGE("Tried to free a non-existant temp: r%d",reg);
+    LOGE("Tried to free a non-existant temp: r%d",reg);
     dvmCompilerAbort(cUnit);
 }
 
@@ -430,7 +430,7 @@ extern void dvmCompilerLockTemp(CompilationUnit *cUnit, int reg)
             return;
         }
     }
-    ALOGE("Tried to lock a non-existant temp: r%d",reg);
+    LOGE("Tried to lock a non-existant temp: r%d",reg);
     dvmCompilerAbort(cUnit);
 }
 

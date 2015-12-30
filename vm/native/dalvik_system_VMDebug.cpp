@@ -614,14 +614,14 @@ static void Dalvik_dalvik_system_VMDebug_cacheRegisterMap(const u4* args,
     }
     *methodDescr++ = '\0';
 
-    //ALOGD("GOT: %s %s %s", classAndMethodDesc, methodName, methodDescr);
+    //LOGD("GOT: %s %s %s", classAndMethodDesc, methodName, methodDescr);
 
     /*
      * Find the class, but only if it's already loaded.
      */
     clazz = dvmLookupClass(classAndMethodDesc, NULL, false);
     if (clazz == NULL) {
-        ALOGD("Class %s not found in bootstrap loader", classAndMethodDesc);
+        LOGD("Class %s not found in bootstrap loader", classAndMethodDesc);
         goto bail;
     }
 
@@ -657,15 +657,15 @@ static void Dalvik_dalvik_system_VMDebug_cacheRegisterMap(const u4* args,
         const RegisterMap* pMap;
         pMap = dvmGetExpandedRegisterMap(method);
         if (pMap == NULL) {
-            ALOGV("No map for %s.%s %s",
+            LOGV("No map for %s.%s %s",
                 classAndMethodDesc, methodName, methodDescr);
         } else {
-            ALOGV("Found map %s.%s %s",
+            LOGV("Found map %s.%s %s",
                 classAndMethodDesc, methodName, methodDescr);
             result = true;
         }
     } else {
-        ALOGV("Unable to find %s.%s %s",
+        LOGV("Unable to find %s.%s %s",
             classAndMethodDesc, methodName, methodDescr);
     }
 
@@ -683,11 +683,11 @@ static void Dalvik_dalvik_system_VMDebug_dumpReferenceTables(const u4* args,
     UNUSED_PARAMETER(args);
     UNUSED_PARAMETER(pResult);
 
-    ALOGI("--- reference table dump ---");
+    LOGI("--- reference table dump ---");
     dvmDumpJniReferenceTables();
     // could dump thread's internalLocalRefTable, probably not useful
     // ditto for thread's jniMonitorRefTable
-    ALOGI("---");
+    LOGI("---");
     RETURN_VOID();
 }
 
@@ -706,7 +706,7 @@ static void Dalvik_dalvik_system_VMDebug_crash(const u4* args,
     UNUSED_PARAMETER(args);
     UNUSED_PARAMETER(pResult);
 
-    ALOGW("Crashing VM on request");
+    LOGW("Crashing VM on request");
     dvmDumpThread(dvmThreadSelf(), false);
     dvmAbort();
 }
@@ -722,7 +722,7 @@ static void Dalvik_dalvik_system_VMDebug_infopoint(const u4* args,
 {
     gDvm.nativeDebuggerActive = true;
 
-    ALOGD("VMDebug infopoint %d hit", args[0]);
+    LOGD("VMDebug infopoint %d hit", args[0]);
 
     gDvm.nativeDebuggerActive = false;
     RETURN_VOID();

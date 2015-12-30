@@ -29,20 +29,20 @@
     stmfd   sp!, {r0-r3}
     mov     r0, r2
     mov     r1, r6
-    ldr     ip, .LdvmFastMethodTraceEnter
-    blx     ip
+    mov     lr, pc
+    ldr     pc, .LdvmFastMethodTraceEnter
     ldmfd   sp!, {r0-r3}
 
-    ldr     ip, [r2, #offMethod_nativeFunc]
-    blx     ip
+    mov     lr, pc
+    ldr     pc, [r2, #offMethod_nativeFunc]
 
     ldmfd   sp!, {r0-r1}
-    ldr     ip, .LdvmFastNativeMethodTraceExit
-    blx     ip
+    mov     lr, pc
+    ldr     pc, .LdvmFastNativeMethodTraceExit
     b       212f
 121:
-    ldr     ip, [r2, #offMethod_nativeFunc]
-    blx     ip
+    mov     lr, pc
+    ldr     pc, [r2, #offMethod_nativeFunc]
 212:
 
     @ native return; r10=newSaveArea
@@ -68,7 +68,7 @@
 #if defined(WITH_JIT_TUNING)
     mov     r0, #kCallsiteInterpreted
 #endif
-    bx      r1
+    mov     pc, r1
 
 /*
  * On entry:
@@ -85,13 +85,11 @@
     ldr     r1, .LdvmMterpCommonExceptionThrown @ PIC way of getting &func
     ldr     rIBASE, .LdvmAsmInstructionStart    @ same as above
     mov     rPC, r0                 @ reload the faulting Dalvik address
-    bx      r1                  @ branch to dvmMterpCommonExceptionThrown
+    mov     pc, r1                  @ branch to dvmMterpCommonExceptionThrown
 
     .align  2
 .LdvmAsmInstructionStart:
     .word   dvmAsmInstructionStart
-.LdvmJitToInterpNoChainNoProfile:
-    .word   dvmJitToInterpNoChainNoProfile
 .LdvmJitToInterpTraceSelectNoChain:
     .word   dvmJitToInterpTraceSelectNoChain
 .LdvmJitToInterpNoChain:

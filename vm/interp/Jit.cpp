@@ -74,14 +74,14 @@ void* dvmSelfVerificationSaveState(const u2* pc, u4* fp,
         sizeof(StackSaveArea);
     unsigned postBytes = self->interpSave.method->registersSize*4;
 
-    //ALOGD("### selfVerificationSaveState(%d) pc: %#x fp: %#x",
+    //LOGD("### selfVerificationSaveState(%d) pc: %#x fp: %#x",
     //    self->threadId, (int)pc, (int)fp);
 
     if (shadowSpace->selfVerificationState != kSVSIdle) {
-        ALOGD("~~~ Save: INCORRECT PREVIOUS STATE(%d): %d",
+        LOGD("~~~ Save: INCORRECT PREVIOUS STATE(%d): %d",
             self->threadId, shadowSpace->selfVerificationState);
-        ALOGD("********** SHADOW STATE DUMP **********");
-        ALOGD("PC: %#x FP: %#x", (int)pc, (int)fp);
+        LOGD("********** SHADOW STATE DUMP **********");
+        LOGD("PC: %#x FP: %#x", (int)pc, (int)fp);
     }
     shadowSpace->selfVerificationState = kSVSStart;
 
@@ -138,18 +138,18 @@ void* dvmSelfVerificationRestoreState(const u2* pc, u4* fp,
     shadowSpace->endShadowFP = fp;
     shadowSpace->jitExitState = exitState;
 
-    //ALOGD("### selfVerificationRestoreState(%d) pc: %#x fp: %#x endPC: %#x",
+    //LOGD("### selfVerificationRestoreState(%d) pc: %#x fp: %#x endPC: %#x",
     //    self->threadId, (int)shadowSpace->startPC, (int)shadowSpace->fp,
     //    (int)pc);
 
     if (shadowSpace->selfVerificationState != kSVSStart) {
-        ALOGD("~~~ Restore: INCORRECT PREVIOUS STATE(%d): %d",
+        LOGD("~~~ Restore: INCORRECT PREVIOUS STATE(%d): %d",
             self->threadId, shadowSpace->selfVerificationState);
-        ALOGD("********** SHADOW STATE DUMP **********");
-        ALOGD("Dalvik PC: %#x endPC: %#x", (int)shadowSpace->startPC,
+        LOGD("********** SHADOW STATE DUMP **********");
+        LOGD("Dalvik PC: %#x endPC: %#x", (int)shadowSpace->startPC,
             (int)shadowSpace->endPC);
-        ALOGD("Interp FP: %#x", (int)shadowSpace->fp);
-        ALOGD("Shadow FP: %#x endFP: %#x", (int)shadowSpace->shadowFP,
+        LOGD("Interp FP: %#x", (int)shadowSpace->fp);
+        LOGD("Shadow FP: %#x endFP: %#x", (int)shadowSpace->shadowFP,
             (int)shadowSpace->endShadowFP);
     }
 
@@ -177,7 +177,7 @@ static void selfVerificationPrintRegisters(int* addr, int* addrRef,
 {
     int i;
     for (i = 0; i < numWords; i++) {
-        ALOGD("(v%d) 0x%8x%s", i, addr[i], addr[i] != addrRef[i] ? " X" : "");
+        LOGD("(v%d) 0x%8x%s", i, addr[i], addr[i] != addrRef[i] ? " X" : "");
     }
 }
 
@@ -197,20 +197,20 @@ static void selfVerificationDumpState(const u2* pc, Thread* self)
         frameBytes2 = (int) shadowSpace->fp -
                       (int)self->interpSave.curFrame - localRegs;
     }
-    ALOGD("********** SHADOW STATE DUMP **********");
-    ALOGD("CurrentPC: %#x, Offset: 0x%04x", (int)pc,
+    LOGD("********** SHADOW STATE DUMP **********");
+    LOGD("CurrentPC: %#x, Offset: 0x%04x", (int)pc,
         (int)(pc - stackSave->method->insns));
-    ALOGD("Class: %s", shadowSpace->method->clazz->descriptor);
-    ALOGD("Method: %s", shadowSpace->method->name);
-    ALOGD("Dalvik PC: %#x endPC: %#x", (int)shadowSpace->startPC,
+    LOGD("Class: %s", shadowSpace->method->clazz->descriptor);
+    LOGD("Method: %s", shadowSpace->method->name);
+    LOGD("Dalvik PC: %#x endPC: %#x", (int)shadowSpace->startPC,
         (int)shadowSpace->endPC);
-    ALOGD("Interp FP: %#x endFP: %#x", (int)shadowSpace->fp,
+    LOGD("Interp FP: %#x endFP: %#x", (int)shadowSpace->fp,
         (int)self->interpSave.curFrame);
-    ALOGD("Shadow FP: %#x endFP: %#x", (int)shadowSpace->shadowFP,
+    LOGD("Shadow FP: %#x endFP: %#x", (int)shadowSpace->shadowFP,
         (int)shadowSpace->endShadowFP);
-    ALOGD("Frame1 Bytes: %d Frame2 Local: %d Bytes: %d", frameBytes,
+    LOGD("Frame1 Bytes: %d Frame2 Local: %d Bytes: %d", frameBytes,
         localRegs, frameBytes2);
-    ALOGD("Trace length: %d State: %d", shadowSpace->traceLength,
+    LOGD("Trace length: %d State: %d", shadowSpace->traceLength,
         shadowSpace->selfVerificationState);
 }
 
@@ -222,13 +222,13 @@ static void selfVerificationDumpTrace(const u2* pc, Thread* self)
     int i, addr, offset;
     DecodedInstruction *decInsn;
 
-    ALOGD("********** SHADOW TRACE DUMP **********");
+    LOGD("********** SHADOW TRACE DUMP **********");
     for (i = 0; i < shadowSpace->traceLength; i++) {
         addr = shadowSpace->trace[i].addr;
         offset =  (int)((u2*)addr - stackSave->method->insns);
         decInsn = &(shadowSpace->trace[i].decInsn);
         /* Not properly decoding instruction, some registers may be garbage */
-        ALOGD("%#x: (0x%04x) %s",
+        LOGD("%#x: (0x%04x) %s",
             addr, offset, dexGetOpcodeName(decInsn->opcode));
     }
 }
@@ -269,12 +269,12 @@ void dvmCheckSelfVerification(const u2* pc, Thread* self)
     DecodedInstruction decInsn;
     dexDecodeInstruction(pc, &decInsn);
 
-    //ALOGD("### DbgIntp(%d): PC: %#x endPC: %#x state: %d len: %d %s",
+    //LOGD("### DbgIntp(%d): PC: %#x endPC: %#x state: %d len: %d %s",
     //    self->threadId, (int)pc, (int)shadowSpace->endPC, state,
     //    shadowSpace->traceLength, dexGetOpcodeName(decInsn.opcode));
 
     if (state == kSVSIdle || state == kSVSStart) {
-        ALOGD("~~~ DbgIntrp: INCORRECT PREVIOUS STATE(%d): %d",
+        LOGD("~~~ DbgIntrp: INCORRECT PREVIOUS STATE(%d): %d",
             self->threadId, state);
         selfVerificationDumpState(pc, self);
         selfVerificationDumpTrace(pc, self);
@@ -308,15 +308,15 @@ void dvmCheckSelfVerification(const u2* pc, Thread* self)
                 shadowSpace->selfVerificationState = kSVSDebugInterp;
                 goto log_and_continue;
             }
-            ALOGD("~~~ DbgIntp(%d): REGISTERS DIVERGENCE!", self->threadId);
+            LOGD("~~~ DbgIntp(%d): REGISTERS DIVERGENCE!", self->threadId);
             selfVerificationDumpState(pc, self);
             selfVerificationDumpTrace(pc, self);
-            ALOGD("*** Interp Registers: addr: %#x bytes: %d",
+            LOGD("*** Interp Registers: addr: %#x bytes: %d",
                 (int)shadowSpace->fp, frameBytes);
             selfVerificationPrintRegisters((int*)shadowSpace->fp,
                                            (int*)shadowSpace->shadowFP,
                                            frameBytes/4);
-            ALOGD("*** Shadow Registers: addr: %#x bytes: %d",
+            LOGD("*** Shadow Registers: addr: %#x bytes: %d",
                 (int)shadowSpace->shadowFP, frameBytes);
             selfVerificationPrintRegisters((int*)shadowSpace->shadowFP,
                                            (int*)shadowSpace->fp,
@@ -341,16 +341,16 @@ void dvmCheckSelfVerification(const u2* pc, Thread* self)
                     shadowSpace->selfVerificationState = kSVSDebugInterp;
                     goto log_and_continue;
                 }
-                ALOGD("~~~ DbgIntp(%d): REGISTERS (FRAME2) DIVERGENCE!",
+                LOGD("~~~ DbgIntp(%d): REGISTERS (FRAME2) DIVERGENCE!",
                     self->threadId);
                 selfVerificationDumpState(pc, self);
                 selfVerificationDumpTrace(pc, self);
-                ALOGD("*** Interp Registers: addr: %#x l: %d bytes: %d",
+                LOGD("*** Interp Registers: addr: %#x l: %d bytes: %d",
                     (int)self->interpSave.curFrame, localRegs, frameBytes2);
                 selfVerificationPrintRegisters((int*)self->interpSave.curFrame,
                                                (int*)shadowSpace->endShadowFP,
                                                (frameBytes2+localRegs)/4);
-                ALOGD("*** Shadow Registers: addr: %#x l: %d bytes: %d",
+                LOGD("*** Shadow Registers: addr: %#x l: %d bytes: %d",
                     (int)shadowSpace->endShadowFP, localRegs, frameBytes2);
                 selfVerificationPrintRegisters((int*)shadowSpace->endShadowFP,
                                                (int*)self->interpSave.curFrame,
@@ -374,8 +374,8 @@ void dvmCheckSelfVerification(const u2* pc, Thread* self)
                     shadowSpace->selfVerificationState = kSVSDebugInterp;
                     goto log_and_continue;
                 }
-                ALOGD("~~~ DbgIntp(%d): MEMORY DIVERGENCE!", self->threadId);
-                ALOGD("Addr: %#x Intrp Data: %#x Jit Data: %#x",
+                LOGD("~~~ DbgIntp(%d): MEMORY DIVERGENCE!", self->threadId);
+                LOGD("Addr: %#x Intrp Data: %#x Jit Data: %#x",
                     heapSpacePtr->addr, memData, heapSpacePtr->data);
                 selfVerificationDumpState(pc, self);
                 selfVerificationDumpTrace(pc, self);
@@ -409,8 +409,8 @@ void dvmCheckSelfVerification(const u2* pc, Thread* self)
 log_and_continue:
     /* If end not been reached, make sure max length not exceeded */
     if (shadowSpace->traceLength >= JIT_MAX_TRACE_LEN) {
-        ALOGD("~~~ DbgIntp(%d): CONTROL DIVERGENCE!", self->threadId);
-        ALOGD("startPC: %#x endPC: %#x currPC: %#x",
+        LOGD("~~~ DbgIntp(%d): CONTROL DIVERGENCE!", self->threadId);
+        LOGD("startPC: %#x endPC: %#x currPC: %#x",
             (int)shadowSpace->startPC, (int)shadowSpace->endPC, (int)pc);
         selfVerificationDumpState(pc, self);
         selfVerificationDumpTrace(pc, self);
@@ -487,44 +487,44 @@ void dvmJitStats()
             if (gDvmJit.pJitEntryTable[i].u.info.chain != gDvmJit.jitTableSize)
                 chains++;
         }
-        ALOGD("JIT: table size is %d, entries used is %d",
+        LOGD("JIT: table size is %d, entries used is %d",
              gDvmJit.jitTableSize,  gDvmJit.jitTableEntriesUsed);
-        ALOGD("JIT: %d traces, %d slots, %d chains, %d thresh, %s",
+        LOGD("JIT: %d traces, %d slots, %d chains, %d thresh, %s",
              hit, not_hit + hit, chains, gDvmJit.threshold,
              gDvmJit.blockingMode ? "Blocking" : "Non-blocking");
 
 #if defined(WITH_JIT_TUNING)
-        ALOGD("JIT: Code cache patches: %d", gDvmJit.codeCachePatches);
+        LOGD("JIT: Code cache patches: %d", gDvmJit.codeCachePatches);
 
-        ALOGD("JIT: Lookups: %d hits, %d misses; %d normal, %d punt",
+        LOGD("JIT: Lookups: %d hits, %d misses; %d normal, %d punt",
              gDvmJit.addrLookupsFound, gDvmJit.addrLookupsNotFound,
              gDvmJit.normalExit, gDvmJit.puntExit);
 
-        ALOGD("JIT: ICHits: %d", gDvmICHitCount);
+        LOGD("JIT: ICHits: %d", gDvmICHitCount);
 
-        ALOGD("JIT: noChainExit: %d IC miss, %d interp callsite, "
+        LOGD("JIT: noChainExit: %d IC miss, %d interp callsite, "
              "%d switch overflow",
              gDvmJit.noChainExit[kInlineCacheMiss],
              gDvmJit.noChainExit[kCallsiteInterpreted],
              gDvmJit.noChainExit[kSwitchOverflow]);
 
-        ALOGD("JIT: ICPatch: %d init, %d rejected, %d lock-free, %d queued, "
+        LOGD("JIT: ICPatch: %d init, %d rejected, %d lock-free, %d queued, "
              "%d dropped",
              gDvmJit.icPatchInit, gDvmJit.icPatchRejected,
              gDvmJit.icPatchLockFree, gDvmJit.icPatchQueued,
              gDvmJit.icPatchDropped);
 
-        ALOGD("JIT: Invoke: %d mono, %d poly, %d native, %d return",
+        LOGD("JIT: Invoke: %d mono, %d poly, %d native, %d return",
              gDvmJit.invokeMonomorphic, gDvmJit.invokePolymorphic,
              gDvmJit.invokeNative, gDvmJit.returnOp);
-        ALOGD("JIT: Inline: %d mgetter, %d msetter, %d pgetter, %d psetter",
+        LOGD("JIT: Inline: %d mgetter, %d msetter, %d pgetter, %d psetter",
              gDvmJit.invokeMonoGetterInlined, gDvmJit.invokeMonoSetterInlined,
              gDvmJit.invokePolyGetterInlined, gDvmJit.invokePolySetterInlined);
-        ALOGD("JIT: Total compilation time: %llu ms", gDvmJit.jitTime / 1000);
-        ALOGD("JIT: Avg unit compilation time: %llu us",
+        LOGD("JIT: Total compilation time: %llu ms", gDvmJit.jitTime / 1000);
+        LOGD("JIT: Avg unit compilation time: %llu us",
              gDvmJit.numCompilations == 0 ? 0 :
              gDvmJit.jitTime / gDvmJit.numCompilations);
-        ALOGD("JIT: Potential GC blocked by compiler: max %llu us / "
+        LOGD("JIT: Potential GC blocked by compiler: max %llu us / "
              "avg %llu us (%d)",
              gDvmJit.maxCompilerThreadBlockGCTime,
              gDvmJit.numCompilerThreadBlockGC == 0 ?
@@ -533,7 +533,7 @@ void dvmJitStats()
              gDvmJit.numCompilerThreadBlockGC);
 #endif
 
-        ALOGD("JIT: %d Translation chains, %d interp stubs",
+        LOGD("JIT: %d Translation chains, %d interp stubs",
              gDvmJit.translationChains, stubs);
         if (gDvmJit.profileMode == kTraceProfilingContinuous) {
             dvmCompilerSortAndPrintTraceProfiles();
@@ -643,8 +643,6 @@ static JitEntry *lookupAndAdd(const u2* dPC, bool callerLocked,
              */
             android_atomic_release_store((int32_t)dPC,
                  (volatile int32_t *)(void *)&gDvmJit.pJitEntryTable[idx].dPC);
-            /* for simulator mode, we need to initialized codeAddress to null */
-            gDvmJit.pJitEntryTable[idx].codeAddress = NULL;
             gDvmJit.pJitEntryTable[idx].dPC = dPC;
             gDvmJit.jitTableEntriesUsed++;
         } else {
@@ -665,14 +663,14 @@ void dvmJitDumpTraceDesc(JitTraceDescription *trace)
     const u2* dpc;
     const u2* dpcBase;
     int curFrag = 0;
-    ALOGD("===========================================");
-    ALOGD("Trace dump %#x, Method %s off %#x",(int)trace,
+    LOGD("===========================================");
+    LOGD("Trace dump %#x, Method %s off %#x",(int)trace,
          trace->method->name,trace->trace[curFrag].info.frag.startOffset);
     dpcBase = trace->method->insns;
     while (!done) {
         DecodedInstruction decInsn;
         if (trace->trace[curFrag].isCode) {
-            ALOGD("Frag[%d]- Insts: %d, start: %#x, hint: %#x, end: %d",
+            LOGD("Frag[%d]- Insts: %d, start: %#x, hint: %#x, end: %d",
                  curFrag, trace->trace[curFrag].info.frag.numInsts,
                  trace->trace[curFrag].info.frag.startOffset,
                  trace->trace[curFrag].info.frag.hint,
@@ -680,7 +678,7 @@ void dvmJitDumpTraceDesc(JitTraceDescription *trace)
             dpc = dpcBase + trace->trace[curFrag].info.frag.startOffset;
             for (i=0; i<trace->trace[curFrag].info.frag.numInsts; i++) {
                 dexDecodeInstruction(dpc, &decInsn);
-                ALOGD("    0x%04x - %s %#x",(dpc-dpcBase),
+                LOGD("    0x%04x - %s %#x",(dpc-dpcBase),
                      dexGetOpcodeName(decInsn.opcode),(int)dpc);
                 dpc += dexGetWidthFromOpcode(decInsn.opcode);
             }
@@ -688,12 +686,12 @@ void dvmJitDumpTraceDesc(JitTraceDescription *trace)
                 done = true;
             }
         } else {
-            ALOGD("Frag[%d]- META info: 0x%08x", curFrag,
+            LOGD("Frag[%d]- META info: 0x%08x", curFrag,
                  (int)trace->trace[curFrag].info.meta);
         }
         curFrag++;
     }
-    ALOGD("-------------------------------------------");
+    LOGD("-------------------------------------------");
 }
 
 /*
@@ -798,15 +796,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
             if (lastPC == NULL) break;
             /* Grow the trace around the last PC if jitState is kJitTSelect */
             dexDecodeInstruction(lastPC, &decInsn);
-#if TRACE_OPCODE_FILTER
-            /* Only add JIT support opcode to trace. End the trace if
-             * this opcode is not supported.
-             */
-            if (!dvmIsOpcodeSupportedByJit(decInsn.opcode)) {
-                self->jitState = kJitTSelectEnd;
-                break;
-            }
-#endif
+
             /*
              * Treat {PACKED,SPARSE}_SWITCH as trace-ending instructions due
              * to the amount of space it takes to generate the chaining
@@ -820,7 +810,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
             }
 
 #if defined(SHOW_TRACE)
-            ALOGD("TraceGen: adding %s. lpc:%#x, pc:%#x",
+            LOGD("TraceGen: adding %s. lpc:%#x, pc:%#x",
                  dexGetOpcodeName(decInsn.opcode), (int)lastPC, (int)pc);
 #endif
             flags = dexGetFlagsFromOpcode(decInsn.opcode);
@@ -865,7 +855,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
                              kInstrInvoke)) != 0)) {
                     self->jitState = kJitTSelectEnd;
 #if defined(SHOW_TRACE)
-                ALOGD("TraceGen: ending on %s, basic block end",
+                LOGD("TraceGen: ending on %s, basic block end",
                      dexGetOpcodeName(decInsn.opcode));
 #endif
 
@@ -936,7 +926,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
                      sizeof(JitTraceRun) * (self->currTraceRun+1));
 
                 if (desc == NULL) {
-                    ALOGE("Out of memory in trace selection");
+                    LOGE("Out of memory in trace selection");
                     dvmJitStopTranslationRequests();
                     self->jitState = kJitDone;
                     allDone = true;
@@ -948,7 +938,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
                     (char*)&(self->trace[0]),
                     sizeof(JitTraceRun) * (self->currTraceRun+1));
 #if defined(SHOW_TRACE)
-                ALOGD("TraceGen:  trace done, adding to queue");
+                LOGD("TraceGen:  trace done, adding to queue");
                 dvmJitDumpTraceDesc(desc);
 #endif
                 if (dvmCompilerWorkEnqueue(
@@ -975,7 +965,7 @@ void dvmCheckJit(const u2* pc, Thread* self)
             allDone = true;
             break;
         default:
-            ALOGE("Unexpected JIT state: %d", self->jitState);
+            LOGE("Unexpected JIT state: %d", self->jitState);
             dvmAbort();
             break;
     }
@@ -1261,7 +1251,7 @@ void dvmJitCheckTraceRequest(Thread* self)
                      * are afoot and disable profiling.
                      */
                     self->jitState = kJitDone;
-                    ALOGD("JIT: JitTable full, disabling profiling");
+                    LOGD("JIT: JitTable full, disabling profiling");
                     dvmJitStopTranslationRequests();
                 }
             }
@@ -1287,14 +1277,14 @@ void dvmJitCheckTraceRequest(Thread* self)
                 /* Turn on trace selection mode */
                 dvmEnableSubMode(self, kSubModeJitTraceBuild);
 #if defined(SHOW_TRACE)
-                ALOGD("Starting trace for %s at %#x",
+                LOGD("Starting trace for %s at %#x",
                      self->interpSave.method->name, (int)self->interpSave.pc);
 #endif
                 break;
             case kJitDone:
                 break;
             default:
-                ALOGE("Unexpected JIT state: %d", self->jitState);
+                LOGE("Unexpected JIT state: %d", self->jitState);
                 dvmAbort();
         }
     } else {
@@ -1319,7 +1309,7 @@ bool dvmJitResizeJitTable( unsigned int size )
     assert(gDvmJit.pJitEntryTable != NULL);
     assert(size && !(size & (size - 1)));   /* Is power of 2? */
 
-    ALOGI("Jit: resizing JitTable from %d to %d", gDvmJit.jitTableSize, size);
+    LOGI("Jit: resizing JitTable from %d to %d", gDvmJit.jitTableSize, size);
 
     if (size <= gDvmJit.jitTableSize) {
         return true;
@@ -1328,7 +1318,7 @@ bool dvmJitResizeJitTable( unsigned int size )
     /* Make sure requested size is compatible with chain field width */
     tempEntry.u.info.chain = size;
     if (tempEntry.u.info.chain != size) {
-        ALOGD("Jit: JitTable request of %d too big", size);
+        LOGD("Jit: JitTable request of %d too big", size);
         return true;
     }
 
@@ -1420,7 +1410,7 @@ JitTraceCounter_t *dvmJitNextTraceCounter()
         JitTraceCounter_t *p =
               (JitTraceCounter_t*) calloc(JIT_PROF_BLOCK_ENTRIES, sizeof(*p));
         if (!p) {
-            ALOGE("Failed to allocate block of trace profile counters");
+            LOGE("Failed to allocate block of trace profile counters");
             dvmAbort();
         }
         gDvmJit.pJitTraceProfCounters->buckets[idx] = p;

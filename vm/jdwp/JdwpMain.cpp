@@ -45,8 +45,8 @@ JdwpNetStateBase::JdwpNetStateBase()
 ssize_t JdwpNetStateBase::writePacket(ExpandBuf* pReply)
 {
     dvmDbgLockMutex(&socketLock);
-    ssize_t cc = TEMP_FAILURE_RETRY(write(clientSock, expandBufGetBuffer(pReply),
-                                          expandBufGetLength(pReply)));
+    ssize_t cc = write(clientSock, expandBufGetBuffer(pReply),
+            expandBufGetLength(pReply));
     dvmDbgUnlockMutex(&socketLock);
 
     return cc;
@@ -59,7 +59,7 @@ ssize_t JdwpNetStateBase::writeBufferedPacket(const struct iovec* iov,
     int iovcnt)
 {
     dvmDbgLockMutex(&socketLock);
-    ssize_t actual = TEMP_FAILURE_RETRY(writev(clientSock, iov, iovcnt));
+    ssize_t actual = writev(clientSock, iov, iovcnt);
     dvmDbgUnlockMutex(&socketLock);
 
     return actual;
@@ -96,16 +96,16 @@ JdwpState* dvmJdwpStartup(const JdwpStartupParams* pParams)
 
     switch (pParams->transport) {
     case kJdwpTransportSocket:
-        // ALOGD("prepping for JDWP over TCP");
+        // LOGD("prepping for JDWP over TCP");
         state->transport = dvmJdwpSocketTransport();
         break;
     case kJdwpTransportAndroidAdb:
-        // ALOGD("prepping for JDWP over ADB");
+        // LOGD("prepping for JDWP over ADB");
         state->transport = dvmJdwpAndroidAdbTransport();
         /* TODO */
         break;
     default:
-        ALOGE("Unknown transport %d", pParams->transport);
+        LOGE("Unknown transport %d", pParams->transport);
         assert(false);
         goto fail;
     }
@@ -158,11 +158,11 @@ JdwpState* dvmJdwpStartup(const JdwpStartupParams* pParams)
         dvmChangeStatus(NULL, THREAD_RUNNING);
 
         if (!dvmJdwpIsActive(state)) {
-            ALOGE("JDWP connection failed");
+            LOGE("JDWP connection failed");
             goto fail;
         }
 
-        ALOGI("JDWP connected");
+        LOGI("JDWP connected");
 
         /*
          * Ordinarily we would pause briefly to allow the debugger to set
@@ -197,7 +197,7 @@ void dvmJdwpResetState(JdwpState* state)
      * mid-request, though, we could see this.
      */
     if (state->eventThreadId != 0) {
-        ALOGW("WARNING: resetting state while event in progress");
+        LOGW("WARNING: resetting state while event in progress");
         assert(false);
     }
 }
@@ -220,18 +220,18 @@ void dvmJdwpShutdown(JdwpState* state)
          * Close down the network to inspire the thread to halt.
          */
         if (gDvm.verboseShutdown)
-            ALOGD("JDWP shutting down net...");
+            LOGD("JDWP shutting down net...");
         dvmJdwpNetShutdown(state);
 
         if (state->debugThreadStarted) {
             state->run = false;
             if (pthread_join(state->debugThreadHandle, &threadReturn) != 0) {
-                ALOGW("JDWP thread join failed");
+                LOGW("JDWP thread join failed");
             }
         }
 
         if (gDvm.verboseShutdown)
-            ALOGD("JDWP freeing netstate...");
+            LOGD("JDWP freeing netstate...");
         dvmJdwpNetFree(state);
         state->netState = NULL;
     }
@@ -257,7 +257,7 @@ static void* jdwpThreadStart(void* arg)
 {
     JdwpState* state = (JdwpState*) arg;
 
-    ALOGV("JDWP: thread running");
+    LOGV("JDWP: thread running");
 
     /*
      * Finish initializing "state", then notify the creating thread that
@@ -316,7 +316,7 @@ static void* jdwpThreadStart(void* arg)
         while (true) {
             // sanity check -- shouldn't happen?
             if (dvmThreadSelf()->status != THREAD_VMWAIT) {
-                ALOGE("JDWP thread no longer in VMWAIT (now %d); resetting",
+                LOGE("JDWP thread no longer in VMWAIT (now %d); resetting",
                     dvmThreadSelf()->status);
                 dvmDbgThreadWaiting();
             }
@@ -366,7 +366,7 @@ static void* jdwpThreadStart(void* arg)
     /* back to running, for thread shutdown */
     dvmDbgThreadRunning();
 
-    ALOGV("JDWP: thread exiting");
+    LOGV("JDWP: thread exiting");
     return NULL;
 }
 
@@ -428,7 +428,7 @@ s8 dvmJdwpGetNowMsec()
 s8 dvmJdwpLastDebuggerActivity(JdwpState* state)
 {
     if (!gDvm.debuggerActive) {
-        ALOGD("dvmJdwpLastDebuggerActivity: no active debugger");
+        LOGD("dvmJdwpLastDebuggerActivity: no active debugger");
         return -1;
     }
 
@@ -436,14 +436,14 @@ s8 dvmJdwpLastDebuggerActivity(JdwpState* state)
 
     /* initializing or in the middle of something? */
     if (last == 0) {
-        ALOGV("+++ last=busy");
+        LOGV("+++ last=busy");
         return 0;
     }
 
     /* now get the current time */
     s8 now = dvmJdwpGetNowMsec();
-    assert(now >= last);
+    assert(now > last);
 
-    ALOGV("+++ debugger interval=%lld", now - last);
+    LOGV("+++ debugger interval=%lld", now - last);
     return now - last;
 }

@@ -78,8 +78,8 @@ while true; do
 done
 
 if [ "x$INTERP" = "x" ]; then
-    INTERP="jit"
-    msg "Using jit by default"
+    INTERP="fast"
+    msg "Using fast interpreter by default"
 fi
 
 if [ "$OPTIMIZE" = "y" ]; then

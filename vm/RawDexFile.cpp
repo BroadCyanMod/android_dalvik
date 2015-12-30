@@ -33,7 +33,7 @@
 static int copyFileToFile(int destFd, int srcFd, size_t size)
 {
     if (lseek(srcFd, 0, SEEK_SET) != 0) {
-        ALOGE("lseek failure: %s", strerror(errno));
+        LOGE("lseek failure: %s", strerror(errno));
         return -1;
     }
 
@@ -49,7 +49,7 @@ static int getModTimeAndSize(int fd, u4* modTime, size_t* size)
     int result = fstat(fd, &buf);
 
     if (result < 0) {
-        ALOGE("Unable to determine mod time: %s", strerror(errno));
+        LOGE("Unable to determine mod time: %s", strerror(errno));
         return -1;
     }
 
@@ -76,12 +76,12 @@ static int verifyMagicAndGetAdler32(int fd, u4 *adler32)
     ssize_t amt = read(fd, headerStart, sizeof(headerStart));
 
     if (amt < 0) {
-        ALOGE("Unable to read header: %s", strerror(errno));
+        LOGE("Unable to read header: %s", strerror(errno));
         return -1;
     }
 
     if (amt != sizeof(headerStart)) {
-        ALOGE("Unable to read full header (only got %d bytes)", (int) amt);
+        LOGE("Unable to read full header (only got %d bytes)", (int) amt);
         return -1;
     }
 
@@ -132,12 +132,12 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
     dvmSetCloseOnExec(dexFd);
 
     if (verifyMagicAndGetAdler32(dexFd, &adler32) < 0) {
-        ALOGE("Error with header for %s", fileName);
+        LOGE("Error with header for %s", fileName);
         goto bail;
     }
 
     if (getModTimeAndSize(dexFd, &modTime, &fileSize) < 0) {
-        ALOGE("Error with stat for %s", fileName);
+        LOGE("Error with stat for %s", fileName);
         goto bail;
     }
 
@@ -155,14 +155,14 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
         cachedName = strdup(odexOutputName);
     }
 
-    ALOGV("dvmRawDexFileOpen: Checking cache for %s (%s)",
+    LOGV("dvmRawDexFileOpen: Checking cache for %s (%s)",
             fileName, cachedName);
 
     optFd = dvmOpenCachedDexFile(fileName, cachedName, modTime,
         adler32, isBootstrap, &newFile, /*createIfMissing=*/true);
 
     if (optFd < 0) {
-        ALOGI("Unable to open or create cache for %s (%s)",
+        LOGI("Unable to open or create cache for %s (%s)",
                 fileName, cachedName);
         goto bail;
     }
@@ -194,12 +194,12 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
         }
 
         if (!result) {
-            ALOGE("Unable to extract+optimize DEX from '%s'", fileName);
+            LOGE("Unable to extract+optimize DEX from '%s'", fileName);
             goto bail;
         }
 
         endWhen = dvmGetRelativeTimeUsec();
-        ALOGD("DEX prep '%s': copy in %dms, rewrite %dms",
+        LOGD("DEX prep '%s': copy in %dms, rewrite %dms",
             fileName,
             (int) (copyWhen - startWhen) / 1000,
             (int) (endWhen - copyWhen) / 1000);
@@ -210,7 +210,7 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
      * doesn't have to be seeked anywhere in particular.
      */
     if (dvmDexFileOpenFromFd(optFd, &pDvmDex) != 0) {
-        ALOGI("Unable to map cached %s", fileName);
+        LOGI("Unable to map cached %s", fileName);
         goto bail;
     }
 
@@ -218,13 +218,13 @@ int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
         /* unlock the fd */
         if (!dvmUnlockCachedDexFile(optFd)) {
             /* uh oh -- this process needs to exit or we'll wedge the system */
-            ALOGE("Unable to unlock DEX file");
+            LOGE("Unable to unlock DEX file");
             goto bail;
         }
         locked = false;
     }
 
-    ALOGV("Successfully opened '%s'", fileName);
+    LOGV("Successfully opened '%s'", fileName);
 
     *ppRawDexFile = (RawDexFile*) calloc(1, sizeof(RawDexFile));
     (*ppRawDexFile)->cacheFileName = cachedName;
@@ -251,7 +251,7 @@ int dvmRawDexFileOpenArray(u1* pBytes, u4 length, RawDexFile** ppRawDexFile)
     DvmDex* pDvmDex = NULL;
 
     if (!dvmPrepareDexInMemory(pBytes, length, &pDvmDex)) {
-        ALOGD("Unable to open raw DEX from array");
+        LOGD("Unable to open raw DEX from array");
         return -1;
     }
     assert(pDvmDex != NULL);

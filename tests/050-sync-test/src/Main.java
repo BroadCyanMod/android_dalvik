@@ -23,7 +23,8 @@ public class Main {
         System.out.println("GOING");
         try {
             Thread.sleep(1000);
-        } catch (InterruptedException ie) {
+        }
+        catch (InterruptedException ie) {
             System.out.println("INTERRUPT!");
             ie.printStackTrace();
         }
@@ -37,22 +38,23 @@ public class Main {
         two = new CpuThread(2);
 
         one.start();
+        two.start();
 
         try {
             Thread.sleep(100);
-        } catch (InterruptedException ie) {
+        }
+        catch (InterruptedException ie) {
             System.out.println("INTERRUPT!");
             ie.printStackTrace();
         }
-
-        two.start();
 
         //System.out.println("main: off and running");
 
         try {
             one.join();
             two.join();
-        } catch (InterruptedException ie) {
+        }
+        catch (InterruptedException ie) {
             System.out.println("INTERRUPT!");
             ie.printStackTrace();
         }
@@ -86,29 +88,34 @@ class CpuThread extends Thread {
         //System.out.print("thread running -- ");
         //System.out.println(Thread.currentThread().getName());
 
-        synchronized (mSyncable) {
-            for (int i = 0; i < 10; i++) {
-                output(mNumber);
-            }
-
-            System.out.print("Final result: ");
-            System.out.println(mCount);
+        for (int i = 0; i < 10; i++) {
+            output(mNumber);
         }
+
+        System.out.print("Final result: ");
+        System.out.println(mCount);
     }
 
     void output(int num) {
-        int count = mCount;
+        /*
+         * Delete the next line; last "final result" should != 20.
+         */
+        synchronized (mSyncable)
+        {
+            int i, count;
 
-        System.out.print("going: ");
-        System.out.println(num);
+            count = mCount;
 
-        /* burn CPU; adjust end value so we exceed scheduler quantum */
-        for (int j = 0; j < 5000; j++) {
-            ;
+            System.out.print("going: ");
+            System.out.println(num);
+
+            /* burn CPU; adjust end value so we exceed scheduler quantum */
+            for (int j = 0; j < 5000; j++)
+                ;
+
+            count++;
+            mCount = count;
         }
-
-        count++;
-        mCount = count;
     }
 }
 
@@ -143,12 +150,14 @@ class SleepyThread extends Thread {
                 synchronized (mWaitOnMe) {
                     mWaitOnMe.wait(9000);
                 }
-            } catch (InterruptedException ie) {
+            }
+            catch (InterruptedException ie) {
                 // Expecting this; interrupted should be false.
                 System.out.println(Thread.currentThread().getName() +
                         " interrupted, flag=" + Thread.interrupted());
                 intr = true;
-            } catch (Exception ex) {
+            }
+            catch (Exception ex) {
                 ex.printStackTrace();
             }
 
@@ -157,7 +166,8 @@ class SleepyThread extends Thread {
         } else {
             try {
                 Thread.sleep(2000);
-            } catch (InterruptedException ie) {
+            }
+            catch (InterruptedException ie) {
                 System.out.println("PESKY INTERRUPTED?");
             }
 

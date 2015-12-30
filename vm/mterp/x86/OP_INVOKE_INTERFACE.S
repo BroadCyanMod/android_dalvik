@@ -18,7 +18,6 @@
     EXPORT_PC
     testl      %eax,%eax                # null this?
     je         common_errNullObject     # yes, fail
-    movl       %eax, TMP_SPILL1(%ebp)
     movl       offObject_clazz(%eax),%eax# eax<- thisPtr->clazz
     movl       %eax,OUT_ARG0(%esp)                 # arg0<- class
     movl       offThread_methodClassDex(%ecx),%eax   # eax<- methodClassDex
@@ -30,5 +29,4 @@
     call       dvmFindInterfaceMethodInCache # eax<- call(class, ref, method, dex)
     testl      %eax,%eax
     je         common_exceptionThrown
-    movl       TMP_SPILL1(%ebp), %ecx
     jmp        common_invokeMethod${routine}

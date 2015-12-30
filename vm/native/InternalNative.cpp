@@ -118,7 +118,7 @@ DalvikNativeFunc dvmLookupInternalNativeMethod(const Method* method)
                     pMeth->signature, method) == 0)
                 {
                     /* match */
-                    //ALOGV("+++  match on %s.%s %s at %p",
+                    //LOGV("+++  match on %s.%s %s at %p",
                     //    className, methodName, methodSignature, pMeth->fnPtr);
                     return pMeth->fnPtr;
                 }
@@ -141,7 +141,7 @@ DalvikNativeFunc dvmLookupInternalNativeMethod(const Method* method)
  */
 void dvmAbstractMethodStub(const u4* args, JValue* pResult)
 {
-    ALOGD("--- called into dvmAbstractMethodStub");
+    LOGD("--- called into dvmAbstractMethodStub");
     dvmThrowAbstractMethodError("abstract method not implemented");
 }
 
@@ -193,7 +193,7 @@ ClassObject* dvmFindClassByName(StringObject* nameObj, Object* loader,
      * auto-generating bogus array classes.
      */
     if (!dexIsValidClassName(name, true)) {
-        ALOGW("dvmFindClassByName rejecting '%s'", name);
+        LOGW("dvmFindClassByName rejecting '%s'", name);
         dvmThrowClassNotFoundException(name);
         goto bail;
     }

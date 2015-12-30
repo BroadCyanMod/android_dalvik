@@ -82,8 +82,6 @@
     }
 #endif
 
-#define FINISH_BKPT(_opcode)       /* FIXME? */
-#define DISPATCH_EXTENDED(_opcode) /* FIXME? */
 
 /*
  * The "goto label" statements turn into function calls followed by
@@ -103,9 +101,9 @@
         return;                                                             \
     } while(false)
 
-#define GOTO_invoke(_target, _methodCallRange)                              \
+#define GOTO_invoke(_target, _methodCallRange, _jumboFormat)                \
     do {                                                                    \
-        dvmMterp_##_target(self, _methodCallRange);                         \
+        dvmMterp_##_target(self, _methodCallRange, _jumboFormat);           \
         return;                                                             \
     } while(false)
 
@@ -120,7 +118,7 @@
  * As a special case, "goto bail" turns into a longjmp.
  */
 #define GOTO_bail()                                                         \
-    dvmMterpStdBail(self)
+    dvmMterpStdBail(self, false);
 
 /*
  * Periodically check for thread suspension.

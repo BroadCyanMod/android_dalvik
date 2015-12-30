@@ -1,4 +1,3 @@
-
 /*
  * Copyright (C) 2008 The Android Open Source Project
  *
@@ -14,9 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#define ATRACE_TAG ATRACE_TAG_DALVIK
-
 /*
  * Garbage-collecting memory allocator.
  */
@@ -29,25 +25,16 @@
 #include "alloc/HeapSource.h"
 #include "alloc/MarkSweep.h"
 #include "os/os.h"
-#include "hprof/Hprof.h"
 
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <limits.h>
 #include <errno.h>
-#include <cutils/process_name.h>
-#include <cutils/properties.h>
 
-
-#include <cutils/trace.h>
-#include <cutils/properties.h>
-
-static int debugalloc()
-{
-    char value[PROPERTY_VALUE_MAX];
-    property_get("dalvik.vm.debug.alloc", value, "0");
-    return atoi(value);
-}
+#ifdef LOG_NDDEBUG
+#undef LOG_NDDEBUG
+#define LOG_NDDEBUG 0
+#endif
 
 static const GcSpec kGcForMallocSpec = {
     true,  /* isPartial */
@@ -196,9 +183,17 @@ static void gcForMalloc(bool clearSoftReferences)
 static void *tryMalloc(size_t size)
 {
     void *ptr;
-    int result = -1;
-    char* hprof_file = NULL;
-    char prop_value[PROPERTY_VALUE_MAX] = {'\0'};
+
+    /* Don't try too hard if there's no way the allocation is
+     * going to succeed.  We have to collect SoftReferences before
+     * throwing an OOME, though.
+     */
+    if (size >= gDvm.heapGrowthLimit) {
+        LOGW("%zd byte allocation exceeds the %zd byte maximum heap size",
+             size, gDvm.heapGrowthLimit);
+        ptr = NULL;
+        goto collect_soft_refs;
+    }
 
 //TODO: figure out better heuristics
 //    There will be a lot of churn if someone allocates a bunch of
@@ -225,13 +220,17 @@ static void *tryMalloc(size_t size)
          * lock, wait for the GC to complete, and retrying allocating.
          */
         dvmWaitForConcurrentGcToComplete();
-    } else {
-      /*
-       * Try a foreground GC since a concurrent GC is not currently running.
-       */
-      gcForMalloc(false);
+        ptr = dvmHeapSourceAlloc(size);
+        if (ptr != NULL) {
+            return ptr;
+        }
     }
-
+    /*
+     * Another failure.  Our thread was starved or there may be too
+     * many live objects.  Try a foreground GC.  This will have no
+     * effect if the concurrent GC is already running.
+     */
+    gcForMalloc(false);
     ptr = dvmHeapSourceAlloc(size);
     if (ptr != NULL) {
         return ptr;
@@ -248,7 +247,6 @@ static void *tryMalloc(size_t size)
 //TODO: may want to grow a little bit more so that the amount of free
 //      space is equal to the old free space + the utilization slop for
 //      the new allocation.
-        if (debugalloc())
         LOGI_HEAP("Grow heap (frag case) to "
                 "%zu.%03zuMB for %zu-byte allocation",
                 FRACTIONAL_MB(newHeapSize), size);
@@ -262,6 +260,7 @@ static void *tryMalloc(size_t size)
      * been collected and cleared before throwing an OOME.
      */
 //TODO: wait for the finalizers from the previous GC to finish
+collect_soft_refs:
     LOGI_HEAP("Forcing collection of SoftReferences for %zu-byte allocation",
             size);
     gcForMalloc(true);
@@ -274,46 +273,6 @@ static void *tryMalloc(size_t size)
     LOGE_HEAP("Out of memory on a %zd-byte allocation.", size);
 //TODO: tell the HeapSource to dump its state
     dvmDumpThread(dvmThreadSelf(), false);
-
-    /* Read the property to check whether hprof should be generated or not */
-    property_get("dalvik.debug.oom",prop_value,"0");
-
-    if(atoi(prop_value) == 1) {
-        LOGE_HEAP("Generating hprof for process: %s PID: %d",
-                    get_process_name(),getpid());
-        dvmUnlockHeap();
-
-        /* allocate memory for hprof file name. Allocate approx 30 bytes.
-         * 11 byte for directory path, 10 bytes for pid, 6 bytes for
-         * extension + "\0'.
-         */
-        hprof_file = (char*) malloc (sizeof(char) * 30);
-
-        /* creation of hprof will fail if /data/misc permission is not set
-         * to 0777.
-         */
-
-        if(hprof_file) {
-            snprintf(hprof_file,30,"/data/misc/%d.hprof",getpid());
-            LOGE_HEAP("Generating hprof in file: %s",hprof_file );
-
-            result = hprofDumpHeap(hprof_file, -1, false);
-            free(hprof_file);
-        } else {
-            LOGE_HEAP("Failed to allocate memory for file name."
-                      "Generating hprof in default file: /data/misc/app_oom.hprof");
-            result = hprofDumpHeap("/data/misc/app_oom.hprof", -1, false);
-        }
-
-        dvmLockMutex(&gDvm.gcHeapLock);
-
-        if (result != 0) {
-            /* ideally we'd throw something more specific based on actual failure */
-            dvmThrowRuntimeException(
-                "Failure during heap dump; check log output for details");
-            LOGE_HEAP(" hprofDumpHeap failed with result: %d ",result);
-        }
-    }
 
     return NULL;
 }
@@ -502,7 +461,6 @@ static void verifyRootsAndHeap()
 void dvmCollectGarbageInternal(const GcSpec* spec)
 {
     GcHeap *gcHeap = gDvm.gcHeap;
-    u4 gcEnd = 0;
     u4 rootStart = 0 , rootEnd = 0;
     u4 dirtyStart = 0, dirtyEnd = 0;
     size_t numObjectsFreed, numBytesFreed;
@@ -518,24 +476,10 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
         return;
     }
 
-    // Trace the beginning of the top-level GC.
-    if (spec == GC_FOR_MALLOC) {
-        ATRACE_BEGIN("GC (alloc)");
-    } else if (spec == GC_CONCURRENT) {
-        ATRACE_BEGIN("GC (concurrent)");
-    } else if (spec == GC_EXPLICIT) {
-        ATRACE_BEGIN("GC (explicit)");
-    } else if (spec == GC_BEFORE_OOM) {
-        ATRACE_BEGIN("GC (before OOM)");
-    } else {
-        ATRACE_BEGIN("GC (unknown)");
-    }
-
     gcHeap->gcRunning = true;
 
-    rootStart = dvmGetRelativeTimeMsec();
-    ATRACE_BEGIN("GC: Threads Suspended"); // Suspend A
     dvmSuspendAllThreads(SUSPEND_FOR_GC);
+    rootStart = dvmGetRelativeTimeMsec();
 
     /*
      * If we are not marking concurrently raise the priority of the
@@ -554,8 +498,6 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
     /* Set up the marking context.
      */
     if (!dvmHeapBeginMarkStep(spec->isPartial)) {
-        ATRACE_END(); // Suspend A
-        ATRACE_END(); // Top-level GC
         LOGE_HEAP("dvmHeapBeginMarkStep failed; aborting");
         dvmAbort();
     }
@@ -579,11 +521,10 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
          * Resume threads while tracing from the roots.  We unlock the
          * heap to allow mutator threads to allocate from free space.
          */
+        rootEnd = dvmGetRelativeTimeMsec();
         dvmClearCardTable();
         dvmUnlockHeap();
         dvmResumeAllThreads(SUSPEND_FOR_GC);
-        ATRACE_END(); // Suspend A
-        rootEnd = dvmGetRelativeTimeMsec();
     }
 
     /* Recursively mark any objects that marked objects point to strongly.
@@ -598,10 +539,9 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
          * Re-acquire the heap lock and perform the final thread
          * suspension.
          */
-        dirtyStart = dvmGetRelativeTimeMsec();
         dvmLockHeap();
-        ATRACE_BEGIN("GC: Threads Suspended"); // Suspend B
         dvmSuspendAllThreads(SUSPEND_FOR_GC);
+        dirtyStart = dvmGetRelativeTimeMsec();
         /*
          * As no barrier intercepts root updates, we conservatively
          * assume all roots may be gray and re-mark them.
@@ -660,10 +600,9 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
     }
 
     if (spec->isConcurrent) {
+        dirtyEnd = dvmGetRelativeTimeMsec();
         dvmUnlockHeap();
         dvmResumeAllThreads(SUSPEND_FOR_GC);
-        ATRACE_END(); // Suspend B
-        dirtyEnd = dvmGetRelativeTimeMsec();
     }
     dvmHeapSweepUnmarkedObjects(spec->isPartial, spec->isConcurrent,
                                 &numObjectsFreed, &numBytesFreed);
@@ -702,9 +641,8 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
     }
 
     if (!spec->isConcurrent) {
-        dvmResumeAllThreads(SUSPEND_FOR_GC);
-        ATRACE_END(); // Suspend A
         dirtyEnd = dvmGetRelativeTimeMsec();
+        dvmResumeAllThreads(SUSPEND_FOR_GC);
         /*
          * Restore the original thread scheduling priority if it was
          * changed at the start of the current garbage collection.
@@ -719,33 +657,28 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
      */
     dvmEnqueueClearedReferences(&gDvm.gcHeap->clearedReferences);
 
-    gcEnd = dvmGetRelativeTimeMsec();
     percentFree = 100 - (size_t)(100.0f * (float)currAllocated / currFootprint);
     if (!spec->isConcurrent) {
         u4 markSweepTime = dirtyEnd - rootStart;
-        u4 gcTime = gcEnd - rootStart;
         bool isSmall = numBytesFreed > 0 && numBytesFreed < 1024;
-        if (debugalloc())
-        ALOGD("%s freed %s%zdK, %d%% free %zdK/%zdK, paused %ums, total %ums",
+        LOGD("%s freed %s%zdK, %d%% free %zdK/%zdK, paused %ums",
              spec->reason,
              isSmall ? "<" : "",
              numBytesFreed ? MAX(numBytesFreed / 1024, 1) : 0,
              percentFree,
              currAllocated / 1024, currFootprint / 1024,
-             markSweepTime, gcTime);
+             markSweepTime);
     } else {
         u4 rootTime = rootEnd - rootStart;
         u4 dirtyTime = dirtyEnd - dirtyStart;
-        u4 gcTime = gcEnd - rootStart;
         bool isSmall = numBytesFreed > 0 && numBytesFreed < 1024;
-        if (debugalloc())
-        ALOGD("%s freed %s%zdK, %d%% free %zdK/%zdK, paused %ums+%ums, total %ums",
+        LOGD("%s freed %s%zdK, %d%% free %zdK/%zdK, paused %ums+%ums",
              spec->reason,
              isSmall ? "<" : "",
              numBytesFreed ? MAX(numBytesFreed / 1024, 1) : 0,
              percentFree,
              currAllocated / 1024, currFootprint / 1024,
-             rootTime, dirtyTime, gcTime);
+             rootTime, dirtyTime);
     }
     if (gcHeap->ddmHpifWhen != 0) {
         LOGD_HEAP("Sending VM heap info to DDM");
@@ -759,8 +692,6 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
         LOGD_HEAP("Dumping native heap to DDM");
         dvmDdmSendHeapSegments(false, true);
     }
-
-    ATRACE_END(); // Top-level GC
 }
 
 /*
@@ -783,22 +714,13 @@ void dvmCollectGarbageInternal(const GcSpec* spec)
  * suspend when the GC thread calls dvmUnlockHeap before dvmResumeAllThreads,
  * but there's no risk of deadlock.)
  */
-bool dvmWaitForConcurrentGcToComplete()
+void dvmWaitForConcurrentGcToComplete()
 {
-    ATRACE_BEGIN("GC: Wait For Concurrent");
-    bool waited = gDvm.gcHeap->gcRunning;
     Thread *self = dvmThreadSelf();
     assert(self != NULL);
-    u4 start = dvmGetRelativeTimeMsec();
     while (gDvm.gcHeap->gcRunning) {
         ThreadStatus oldStatus = dvmChangeStatus(self, THREAD_VMWAIT);
         dvmWaitCond(&gDvm.gcHeapCond, &gDvm.gcHeapLock);
         dvmChangeStatus(self, oldStatus);
     }
-    u4 end = dvmGetRelativeTimeMsec();
-    if (end - start > 0 && debugalloc()) {
-        ALOGD("WAIT_FOR_CONCURRENT_GC blocked %ums", end - start);
-    }
-    ATRACE_END();
-    return waited;
 }

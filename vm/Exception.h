@@ -463,7 +463,6 @@ void dvmThrowTypeNotPresentException(const char* descriptor);
  * the given detail message.
  */
 void dvmThrowUnsatisfiedLinkError(const char* msg);
-void dvmThrowUnsatisfiedLinkError(const char* msg, const Method* method);
 
 /**
  * Throw an UnsupportedOperationException in the current thread, with

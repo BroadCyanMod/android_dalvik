@@ -41,9 +41,9 @@ hprof_context_t* hprofStartup(const char *outputFileName, int fd,
     hprofStartup_String();
     hprofStartup_Class();
 
-    hprof_context_t *ctx = (hprof_context_t *)calloc(1, sizeof(*ctx));
+    hprof_context_t *ctx = (hprof_context_t *)malloc(sizeof(*ctx));
     if (ctx == NULL) {
-        ALOGE("hprof: can't allocate context.");
+        LOGE("hprof: can't allocate context.");
         return NULL;
     }
 
@@ -67,16 +67,16 @@ bool hprofShutdown(hprof_context_t *tailCtx)
      * Create a new context struct for the start of the file.  We
      * heap-allocate it so we can share the "free" function.
      */
-    hprof_context_t *headCtx = (hprof_context_t *)calloc(1, sizeof(*headCtx));
+    hprof_context_t *headCtx = (hprof_context_t *)malloc(sizeof(*headCtx));
     if (headCtx == NULL) {
-        ALOGE("hprof: can't allocate context.");
+        LOGE("hprof: can't allocate context.");
         hprofFreeContext(tailCtx);
         return false;
     }
     hprofContextInit(headCtx, strdup(tailCtx->fileName), tailCtx->fd, true,
         tailCtx->directToDdms);
 
-    ALOGI("hprof: dumping heap strings to \"%s\".", tailCtx->fileName);
+    LOGI("hprof: dumping heap strings to \"%s\".", tailCtx->fileName);
     hprofDumpStrings(headCtx);
     hprofDumpClasses(headCtx);
 
@@ -115,13 +115,13 @@ bool hprofShutdown(hprof_context_t *tailCtx)
         if (headCtx->fd >= 0) {
             outFd = dup(headCtx->fd);
             if (outFd < 0) {
-                ALOGE("dup(%d) failed: %s", headCtx->fd, strerror(errno));
+                LOGE("dup(%d) failed: %s", headCtx->fd, strerror(errno));
                 /* continue to fail-handler below */
             }
         } else {
             outFd = open(tailCtx->fileName, O_WRONLY|O_CREAT|O_TRUNC, 0644);
             if (outFd < 0) {
-                ALOGE("can't open %s: %s", headCtx->fileName, strerror(errno));
+                LOGE("can't open %s: %s", headCtx->fileName, strerror(errno));
                 /* continue to fail-handler below */
             }
         }
@@ -145,7 +145,7 @@ bool hprofShutdown(hprof_context_t *tailCtx)
     }
 
     /* throw out a log message for the benefit of "runhat" */
-    ALOGI("hprof: heap dump completed (%dKB)",
+    LOGI("hprof: heap dump completed (%dKB)",
         (headCtx->fileDataSize + tailCtx->fileDataSize + 1023) / 1024);
 
     hprofFreeContext(headCtx);
@@ -246,8 +246,6 @@ int hprofDumpHeap(const char* fileName, int fd, bool directToDdms)
     if (ctx == NULL) {
         return -1;
     }
-    // first record
-    hprofStartNewRecord(ctx, HPROF_TAG_HEAP_DUMP_SEGMENT, HPROF_TIME);
     dvmVisitRoots(hprofRootVisitor, ctx);
     dvmHeapBitmapWalk(dvmHeapSourceGetLiveBits(), hprofBitmapCallback, ctx);
     hprofFinishHeapDump(ctx);

@@ -4,7 +4,7 @@
  * ===========================================================================
  */
 
-    .section .data.rel.ro
+    .text
     .align  4
 
     .global dmvCompilerTemplateEnd

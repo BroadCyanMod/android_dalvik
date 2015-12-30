@@ -20,41 +20,10 @@
 #include "Dalvik.h"
 
 #include <stdlib.h>
-#include <sys/time.h>
 
 #ifndef NDEBUG
 
-#define DBUG_MSG    ALOGI
-
-class Stopwatch {
-public:
-    Stopwatch() {
-        reset();
-    }
-
-    void reset() {
-        start_ = now();
-    }
-
-    float elapsedSeconds() {
-        return (now() - start_) * 0.000001f;
-    }
-
-private:
-    u8 start_;
-
-    static u8 now() {
-#ifdef HAVE_POSIX_CLOCKS
-        struct timespec tm;
-        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tm);
-        return tm.tv_sec * 1000000LL + tm.tv_nsec / 1000;
-#else
-        struct timeval tv;
-        gettimeofday(&tv, NULL);
-        return tv.tv_sec * 1000000LL + tv.tv_usec;
-#endif
-    }
-};
+#define DBUG_MSG    LOGI
 
 /*
  * Basic add/get/delete tests in an unsegmented table.
@@ -79,7 +48,7 @@ static bool basicTest()
 
     iref0 = (IndirectRef) 0x11110;
     if (irt.remove(cookie, iref0)) {
-        ALOGE("unexpectedly successful removal");
+        LOGE("unexpectedly successful removal");
         goto bail;
     }
 
@@ -91,14 +60,14 @@ static bool basicTest()
     iref1 = irt.add(cookie, obj1);
     iref2 = irt.add(cookie, obj2);
     if (iref0 == NULL || iref1 == NULL || iref2 == NULL) {
-        ALOGE("trivial add1 failed");
+        LOGE("trivial add1 failed");
         goto bail;
     }
 
     if (irt.get(iref0) != obj0 ||
             irt.get(iref1) != obj1 ||
             irt.get(iref2) != obj2) {
-        ALOGE("objects don't match expected values %p %p %p vs. %p %p %p",
+        LOGE("objects don't match expected values %p %p %p vs. %p %p %p",
                 irt.get(iref0), irt.get(iref1), irt.get(iref2),
                 obj0, obj1, obj2);
         goto bail;
@@ -110,19 +79,19 @@ static bool basicTest()
             !irt.remove(cookie, iref1) ||
             !irt.remove(cookie, iref2))
     {
-        ALOGE("fifo deletion failed");
+        LOGE("fifo deletion failed");
         goto bail;
     }
 
     /* table should be empty now */
     if (irt.capacity() != 0) {
-        ALOGE("fifo del not empty");
+        LOGE("fifo del not empty");
         goto bail;
     }
 
     /* get invalid entry (off the end of the list) */
     if (irt.get(iref0) != kInvalidIndirectRefObject) {
-        ALOGE("stale entry get succeeded unexpectedly");
+        LOGE("stale entry get succeeded unexpectedly");
         goto bail;
     }
 
@@ -134,7 +103,7 @@ static bool basicTest()
     iref1 = irt.add(cookie, obj1);
     iref2 = irt.add(cookie, obj2);
     if (iref0 == NULL || iref1 == NULL || iref2 == NULL) {
-        ALOGE("trivial add2 failed");
+        LOGE("trivial add2 failed");
         goto bail;
     }
 
@@ -142,13 +111,13 @@ static bool basicTest()
             !irt.remove(cookie, iref1) ||
             !irt.remove(cookie, iref0))
     {
-        ALOGE("lifo deletion failed");
+        LOGE("lifo deletion failed");
         goto bail;
     }
 
     /* table should be empty now */
     if (irt.capacity() != 0) {
-        ALOGE("lifo del not empty");
+        LOGE("lifo del not empty");
         goto bail;
     }
 
@@ -161,34 +130,34 @@ static bool basicTest()
     iref1 = irt.add(cookie, obj1);
     iref2 = irt.add(cookie, obj2);
     if (iref0 == NULL || iref1 == NULL || iref2 == NULL) {
-        ALOGE("trivial add3 failed");
+        LOGE("trivial add3 failed");
         goto bail;
     }
 
     if (irt.capacity() != 3) {
-        ALOGE("expected 3 entries, found %d", irt.capacity());
+        LOGE("expected 3 entries, found %d", irt.capacity());
         goto bail;
     }
 
     if (!irt.remove(cookie, iref1) || irt.remove(cookie, iref1)) {
-        ALOGE("unorder deletion1 failed");
+        LOGE("unorder deletion1 failed");
         goto bail;
     }
 
     /* get invalid entry (from hole) */
     if (irt.get(iref1) != kInvalidIndirectRefObject) {
-        ALOGE("hole get succeeded unexpectedly");
+        LOGE("hole get succeeded unexpectedly");
         goto bail;
     }
 
     if (!irt.remove(cookie, iref2) || !irt.remove(cookie, iref0)) {
-        ALOGE("unorder deletion2 failed");
+        LOGE("unorder deletion2 failed");
         goto bail;
     }
 
     /* table should be empty now */
     if (irt.capacity() != 0) {
-        ALOGE("unorder del not empty");
+        LOGE("unorder del not empty");
         goto bail;
     }
 
@@ -203,32 +172,32 @@ static bool basicTest()
     iref2 = irt.add(cookie, obj2);
     iref3 = irt.add(cookie, obj3);
     if (iref0 == NULL || iref1 == NULL || iref2 == NULL || iref3 == NULL) {
-        ALOGE("trivial add4 failed");
+        LOGE("trivial add4 failed");
         goto bail;
     }
     if (!irt.remove(cookie, iref1)) {
-        ALOGE("remove 1 of 4 failed");
+        LOGE("remove 1 of 4 failed");
         goto bail;
     }
     iref1 = irt.add(cookie, obj1);
     if (irt.capacity() != 4) {
-        ALOGE("hole not filled");
+        LOGE("hole not filled");
         goto bail;
     }
     if (!irt.remove(cookie, iref1) || !irt.remove(cookie, iref3)) {
-        ALOGE("remove 1/3 failed");
+        LOGE("remove 1/3 failed");
         goto bail;
     }
     if (irt.capacity() != 3) {
-        ALOGE("should be 3 after two deletions");
+        LOGE("should be 3 after two deletions");
         goto bail;
     }
     if (!irt.remove(cookie, iref2) || !irt.remove(cookie, iref0)) {
-        ALOGE("remove 2/0 failed");
+        LOGE("remove 2/0 failed");
         goto bail;
     }
     if (irt.capacity() != 0) {
-        ALOGE("not empty after split remove");
+        LOGE("not empty after split remove");
         goto bail;
     }
 
@@ -242,15 +211,15 @@ static bool basicTest()
     irt.remove(cookie, iref0);
     iref1 = irt.add(cookie, obj1);
     if (irt.remove(cookie, iref0)) {
-        ALOGE("mismatched del succeeded (%p vs %p)", iref0, iref1);
+        LOGE("mismatched del succeeded (%p vs %p)", iref0, iref1);
         goto bail;
     }
     if (!irt.remove(cookie, iref1)) {
-        ALOGE("switched del failed");
+        LOGE("switched del failed");
         goto bail;
     }
     if (irt.capacity() != 0) {
-        ALOGE("switching del not empty");
+        LOGE("switching del not empty");
         goto bail;
     }
 
@@ -265,22 +234,22 @@ static bool basicTest()
     if (iref0 != iref1) {
         /* try 0, should not work */
         if (irt.remove(cookie, iref0)) {
-            ALOGE("temporal del succeeded (%p vs %p)", iref0, iref1);
+            LOGE("temporal del succeeded (%p vs %p)", iref0, iref1);
             goto bail;
         }
     }
     if (!irt.remove(cookie, iref1)) {
-        ALOGE("temporal cleanup failed");
+        LOGE("temporal cleanup failed");
         goto bail;
     }
     if (irt.capacity() != 0) {
-        ALOGE("temporal del not empty");
+        LOGE("temporal del not empty");
         goto bail;
     }
 
     DBUG_MSG("+++ START null lookup\n");
     if (irt.get(NULL) != kInvalidIndirectRefObject) {
-        ALOGE("null lookup succeeded");
+        LOGE("null lookup succeeded");
         goto bail;
     }
 
@@ -288,7 +257,7 @@ static bool basicTest()
     iref0 = irt.add(cookie, obj0);
     irt.remove(cookie, iref0);
     if (irt.get(iref0) != kInvalidIndirectRefObject) {
-        ALOGE("stale lookup succeeded");
+        LOGE("stale lookup succeeded");
         goto bail;
     }
 
@@ -300,38 +269,38 @@ static bool basicTest()
     for (i = 0; i < kTableMax; i++) {
         manyRefs[i] = irt.add(cookie, obj0);
         if (manyRefs[i] == NULL) {
-            ALOGE("Failed adding %d of %d", i, kTableMax);
+            LOGE("Failed adding %d of %d", i, kTableMax);
             goto bail;
         }
     }
     if (irt.add(cookie, obj0) != NULL) {
-        ALOGE("Table overflow succeeded");
+        LOGE("Table overflow succeeded");
         goto bail;
     }
     if (irt.capacity() != (size_t)kTableMax) {
-        ALOGE("Expected %d entries, found %d", kTableMax, irt.capacity());
+        LOGE("Expected %d entries, found %d", kTableMax, irt.capacity());
         goto bail;
     }
     irt.dump("table with 20 entries, all filled");
     for (i = 0; i < kTableMax-1; i++) {
         if (!irt.remove(cookie, manyRefs[i])) {
-            ALOGE("multi-remove failed at %d", i);
+            LOGE("multi-remove failed at %d", i);
             goto bail;
         }
     }
     irt.dump("table with 20 entries, 19 of them holes");
     /* because of removal order, should have 20 entries, 19 of them holes */
     if (irt.capacity() != (size_t)kTableMax) {
-        ALOGE("Expected %d entries (with holes), found %d",
+        LOGE("Expected %d entries (with holes), found %d",
                 kTableMax, irt.capacity());
         goto bail;
     }
     if (!irt.remove(cookie, manyRefs[kTableMax-1])) {
-        ALOGE("multi-remove final failed");
+        LOGE("multi-remove final failed");
         goto bail;
     }
     if (irt.capacity() != 0) {
-        ALOGE("multi-del not empty");
+        LOGE("multi-del not empty");
         goto bail;
     }
 
@@ -344,78 +313,13 @@ bail:
     return result;
 }
 
-static bool performanceTest()
-{
-    static const int kTableMax = 100;
-    IndirectRefTable irt;
-    IndirectRef manyRefs[kTableMax];
-    ClassObject* clazz = dvmFindClass("Ljava/lang/Object;", NULL);
-    Object* obj0 = dvmAllocObject(clazz, ALLOC_DONT_TRACK);
-    const u4 cookie = IRT_FIRST_SEGMENT;
-    const int kLoops = 100000;
-    Stopwatch stopwatch;
-
-    DBUG_MSG("+++ START performance\n");
-
-    if (!irt.init(kTableMax, kTableMax, kIndirectKindGlobal)) {
-        return false;
-    }
-
-    stopwatch.reset();
-    for (int loop = 0; loop < kLoops; loop++) {
-        for (int i = 0; i < kTableMax; i++) {
-            manyRefs[i] = irt.add(cookie, obj0);
-        }
-        for (int i = 0; i < kTableMax; i++) {
-            irt.remove(cookie, manyRefs[i]);
-        }
-    }
-    DBUG_MSG("Add/remove %d objects FIFO order, %d iterations, %0.3fms / iteration",
-            kTableMax, kLoops, stopwatch.elapsedSeconds() * 1000 / kLoops);
-
-    stopwatch.reset();
-    for (int loop = 0; loop < kLoops; loop++) {
-        for (int i = 0; i < kTableMax; i++) {
-            manyRefs[i] = irt.add(cookie, obj0);
-        }
-        for (int i = kTableMax; i-- > 0; ) {
-            irt.remove(cookie, manyRefs[i]);
-        }
-    }
-    DBUG_MSG("Add/remove %d objects LIFO order, %d iterations, %0.3fms / iteration",
-            kTableMax, kLoops, stopwatch.elapsedSeconds() * 1000  / kLoops);
-
-    for (int i = 0; i < kTableMax; i++) {
-        manyRefs[i] = irt.add(cookie, obj0);
-    }
-    stopwatch.reset();
-    for (int loop = 0; loop < kLoops; loop++) {
-        for (int i = 0; i < kTableMax; i++) {
-            irt.get(manyRefs[i]);
-        }
-    }
-    DBUG_MSG("Get %d objects, %d iterations, %0.3fms / iteration",
-            kTableMax, kLoops, stopwatch.elapsedSeconds() * 1000  / kLoops);
-    for (int i = kTableMax; i-- > 0; ) {
-        irt.remove(cookie, manyRefs[i]);
-    }
-
-    irt.destroy();
-    return true;
-}
-
 /*
  * Some quick tests.
  */
 bool dvmTestIndirectRefTable()
 {
     if (!basicTest()) {
-        ALOGE("IRT basic test failed");
-        return false;
-    }
-
-    if (!performanceTest()) {
-        ALOGE("IRT performance test failed");
+        LOGE("IRT basic test failed");
         return false;
     }
 

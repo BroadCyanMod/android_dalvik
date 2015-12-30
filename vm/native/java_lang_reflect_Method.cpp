@@ -106,7 +106,7 @@ init_failed:
     /*
      * If initialization failed, an exception will be raised.
      */
-    ALOGD("Method.invoke() on bad class %s failed",
+    LOGD("Method.invoke() on bad class %s failed",
         declaringClass->descriptor);
     assert(dvmCheckException(dvmThreadSelf()));
     RETURN_VOID();

@@ -117,14 +117,14 @@ float dvmGetTargetHeapUtilization(void);
 void dvmSetTargetHeapUtilization(float newTarget);
 
 /*
- * Sets HEAP_MIN_FREE
+ * Sets HEAP_IDEAL_FREE
  */
-void dvmSetTargetHeapMinFree(size_t size);
+void dvmSetTargetHeapIdealFree(size_t size);
 
 /*
- * Gets HEAP_MIN_FREE
+ * Gets HEAP_IDEAL_FREE
  */
-int dvmGetTargetHeapMinFree();
+int dvmGetTargetHeapIdealFree();
 
 /*
  * Sets CONCURRENT_START

@@ -41,8 +41,8 @@ $chaintgt:
     stmfd   sp!, {r0-r2,lr}             @ preserve clobbered live registers
     mov     r1, r6
     @ r0=methodToCall, r1=rSELF
-    ldr     ip, .LdvmFastMethodTraceEnter
-    blx     ip
+    mov     lr, pc
+    ldr     pc, .LdvmFastMethodTraceEnter
     ldmfd   sp!, {r0-r2,lr}             @ restore registers
 #endif
 

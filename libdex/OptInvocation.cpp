@@ -69,7 +69,7 @@ char* dexOptGenerateCacheFileName(const char* fileName, const char* subFileName)
          * the leading "./" out, but it'll do.
          */
         if (getcwd(absoluteFile, kBufLen) == NULL) {
-            ALOGE("Can't get CWD while opening jar file");
+            LOGE("Can't get CWD while opening jar file");
             return NULL;
         }
         strncat(absoluteFile, "/", kBufLen);
@@ -116,9 +116,8 @@ char* dexOptGenerateCacheFileName(const char* fileName, const char* subFileName)
         systemRoot = "/system";
 
     if (dexRoot == NULL)
-        dexRoot = dataRoot;
+        dexRoot = "/data";
 
-#ifdef ALLOW_DEXROOT_ON_CACHE
     /* Cache anything stored on /system in cacheRoot, everything else in dataRoot */
     if (!strncmp(absoluteFile, systemRoot, strlen(systemRoot))) {
         property_get("dalvik.vm.dexopt-data-only", dexoptDataOnly, "");
@@ -126,7 +125,6 @@ char* dexOptGenerateCacheFileName(const char* fileName, const char* subFileName)
             dexRoot = cacheRoot;
         }
     }
-#endif
 
     snprintf(nameBuf, kBufLen, "%s/%s", dexRoot, kCacheDirectoryName);
 
@@ -134,7 +132,7 @@ char* dexOptGenerateCacheFileName(const char* fileName, const char* subFileName)
      */
     strncat(nameBuf, absoluteFile, kBufLen);
 
-    ALOGV("Cache file for '%s' '%s' is '%s'", fileName, subFileName, nameBuf);
+    LOGV("Cache file for '%s' '%s' is '%s'", fileName, subFileName, nameBuf);
     return strdup(nameBuf);
 }
 
@@ -167,7 +165,7 @@ int dexOptCreateEmptyHeader(int fd)
     actual = write(fd, &optHdr, sizeof(optHdr));
     if (actual != sizeof(optHdr)) {
         int err = errno ? errno : -1;
-        ALOGE("opt header write failed: %s", strerror(errno));
+        LOGE("opt header write failed: %s", strerror(errno));
         return errno;
     }
 

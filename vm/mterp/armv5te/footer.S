@@ -466,6 +466,35 @@ save_callsiteinfo:
 #endif
 
 /*
+ * Common code for jumbo method invocation.
+ * NOTE: this adjusts rPC to account for the difference in instruction width.
+ * As a result, the savedPc in the stack frame will not be wholly accurate. So
+ * long as that is only used for source file line number calculations, we're
+ * okay.
+ */
+common_invokeMethodJumboNoThis:
+#if defined(WITH_JIT)
+ /* On entry: r0 is "Method* methodToCall */
+    mov     r9, #0                      @ clear "this"
+#endif
+common_invokeMethodJumbo:
+ /* On entry: r0 is "Method* methodToCall, r9 is "this" */
+.LinvokeNewJumbo:
+#if defined(WITH_JIT)
+    ldrh    r1, [rSELF, #offThread_subMode]
+    ands    r1, #kSubModeJitTraceBuild
+    blne    save_callsiteinfo
+#endif
+    @ prepare to copy args to "outs" area of current frame
+    add     rPC, rPC, #4                @ adjust pc to make return consistent
+    FETCH(r2, 1)                        @ r2<- BBBB (arg count)
+    SAVEAREA_FROM_FP(r10, rFP)          @ r10<- stack save area
+    cmp     r2, #0                      @ no args?
+    beq     .LinvokeArgsDone            @ if no args, skip the rest
+    FETCH(r1, 2)                        @ r1<- CCCC
+    b       .LinvokeRangeArgs           @ handle args like invoke range
+
+/*
  * Common code for method invocation with range.
  *
  * On entry:
@@ -655,8 +684,8 @@ dalvik_mterp:
 
     cmp     lr, #0                      @ any special SubModes active?
     bne     11f                         @ go handle them if so
-    ldr     ip, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
-    blx     ip
+    mov     lr, pc                      @ set return addr
+    ldr     pc, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
 7:
 
     @ native return; r10=newSaveArea
@@ -682,8 +711,8 @@ dalvik_mterp:
     ldmfd   sp, {r0-r3}                 @ refresh.  NOTE: no sp autoincrement
 
     @ Call the native method
-    ldr     ip, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
-    blx     ip
+    mov     lr, pc                      @ set return addr
+    ldr     pc, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
 
     @ Restore the pre-call arguments
     ldmfd   sp!, {r0-r3}                @ r2<- methodToCall (others unneeded)
@@ -845,6 +874,7 @@ common_exceptionThrown:
     ldr     r1, [rSELF, #offThread_method] @ r1<- self->method
     mov     r0, rSELF                   @ r0<- self
     ldr     r1, [r1, #offMethod_insns]  @ r1<- method->insns
+    ldrh    lr, [rSELF, #offThread_subMode]  @ lr<- subMode flags
     mov     r2, r9                      @ r2<- exception
     sub     r1, rPC, r1                 @ r1<- pc - method->insns
     mov     r1, r1, asr #1              @ r1<- offset in code units
@@ -929,9 +959,7 @@ common_exceptionThrown:
     ldr     r3, [r3, #offClassObject_descriptor]
     @
     ldr     r2, strExceptionNotCaughtLocally
-0:  add     r2, pc
     ldr     r1, strLogTag
-1:  add     r1, pc
     mov     r0, #3                      @ LOG_DEBUG
     bl      __android_log_print
 #endif
@@ -941,10 +969,6 @@ common_exceptionThrown:
     bl      dvmReleaseTrackedAlloc      @ release the exception
     b       common_gotoBail             @ bail out
 
-strExceptionNotCaughtLocally:
-    .word   PCREL_REF(.LstrExceptionNotCaughtLocally,0b)
-strLogTag:
-    .word   PCREL_REF(.LstrLogTag,1b)
 
     /*
      * Exception handling, calls through "glue code".
@@ -1012,12 +1036,8 @@ common_errArrayIndex:
 common_errDivideByZero:
     EXPORT_PC()
     ldr     r0, strDivideByZero
-0:  add     r0, pc
     bl      dvmThrowArithmeticException
     b       common_exceptionThrown
-
-strDivideByZero:
-    .word   PCREL_REF(.LstrDivideByZero,0b)
 
 /*
  * Attempt to allocate an array with a negative size.
@@ -1067,15 +1087,11 @@ common_abort:
     .macro  SQUEAK num
 common_squeak\num:
     stmfd   sp!, {r0, r1, r2, r3, ip, lr}
-    ldr     r0, strSqueak\num
-0:  add     r0, pc
+    ldr     r0, strSqueak
     mov     r1, #\num
     bl      printf
     ldmfd   sp!, {r0, r1, r2, r3, ip, lr}
     bx      lr
-
-strSqueak\num:
-    .word   PCREL_REF(.LstrSqueak,0b)
     .endm
 
     SQUEAK  0
@@ -1092,13 +1108,9 @@ common_printNum:
     stmfd   sp!, {r0, r1, r2, r3, ip, lr}
     mov     r1, r0
     ldr     r0, strSqueak
-0:  add     r0, pc
     bl      printf
     ldmfd   sp!, {r0, r1, r2, r3, ip, lr}
     bx      lr
-
-strSqueak:
-    .word   PCREL_REF(.LstrSqueak,0b)
 
 /*
  * Print a newline, preserving registers.
@@ -1106,13 +1118,9 @@ strSqueak:
 common_printNewline:
     stmfd   sp!, {r0, r1, r2, r3, ip, lr}
     ldr     r0, strNewline
-0:  add     r0, pc
     bl      printf
     ldmfd   sp!, {r0, r1, r2, r3, ip, lr}
     bx      lr
-
-strNewline:
-    .word   PCREL_REF(.LstrNewline,0b)
 
     /*
      * Print the 32-bit quantity in r0 as a hex value, preserving registers.
@@ -1121,13 +1129,9 @@ common_printHex:
     stmfd   sp!, {r0, r1, r2, r3, ip, lr}
     mov     r1, r0
     ldr     r0, strPrintHex
-0:  add     r0, pc
     bl      printf
     ldmfd   sp!, {r0, r1, r2, r3, ip, lr}
     bx      lr
-
-strPrintHex:
-    .word   PCREL_REF(.LstrPrintHex,0b)
 
 /*
  * Print the 64-bit quantity in r0-r1, preserving registers.
@@ -1137,13 +1141,9 @@ common_printLong:
     mov     r3, r1
     mov     r2, r0
     ldr     r0, strPrintLong
-0:  add     r0, pc
     bl      printf
     ldmfd   sp!, {r0, r1, r2, r3, ip, lr}
     bx      lr
-
-strPrintLong:
-    .word   PCREL_REF(.LstrPrintLong,0b)
 
 /*
  * Print full method info.  Pass the Method* in r0.  Preserves regs.
@@ -1199,6 +1199,25 @@ dvmConfigureFP:
 #endif
 
 
+/*
+ * String references, must be close to the code that uses them.
+ */
+    .align  2
+strDivideByZero:
+    .word   .LstrDivideByZero
+strLogTag:
+    .word   .LstrLogTag
+strExceptionNotCaughtLocally:
+    .word   .LstrExceptionNotCaughtLocally
+
+strNewline:
+    .word   .LstrNewline
+strSqueak:
+    .word   .LstrSqueak
+strPrintHex:
+    .word   .LstrPrintHex
+strPrintLong:
+    .word   .LstrPrintLong
 
 /*
  * Zero-terminated ASCII string data.

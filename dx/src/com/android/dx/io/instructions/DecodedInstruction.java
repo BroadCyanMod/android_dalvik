@@ -21,6 +21,7 @@ import com.android.dx.io.OpcodeInfo;
 import com.android.dx.io.Opcodes;
 import com.android.dx.util.DexException;
 import com.android.dx.util.Hex;
+
 import java.io.EOFException;
 
 /**
@@ -58,7 +59,7 @@ public abstract class DecodedInstruction {
 
     /**
      * literal value argument; also used for special verification error
-     * constants (format 20bc) as well as should-be-zero values
+     * constants (formats 20bc and 40sc) as well as should-be-zero values
      * (formats 10x, 20t, 30t, and 32x)
      */
     private final long literal;
@@ -89,7 +90,7 @@ public abstract class DecodedInstruction {
                 decoded[in.cursor()] = DecodedInstruction.decode(in);
             }
         } catch (EOFException ex) {
-            throw new DexException(ex);
+            throw new AssertionError("shouldn't happen");
         }
 
         return decoded;

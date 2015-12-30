@@ -61,14 +61,6 @@
 #if defined(__ARM_EABI__)
 # define NO_UNALIGN_64__UNION
 #endif
-/*
- * MIPS ABI requires 64-bit alignment for access to 64-bit data types.
- *
- * Use memcpy() to do the transfer
- */
-#if defined(__mips__)
-/* # define NO_UNALIGN_64__UNION */
-#endif
 
 
 //#define LOG_INSTR                   /* verbose debugging */
@@ -103,7 +95,7 @@
         {                                                                   \
             char* desc;                                                     \
             desc = dexProtoCopyMethodDescriptor(&curMethod->prototype);     \
-            ALOGE("Invalid branch %d at 0x%04x in %s.%s %s",                 \
+            LOGE("Invalid branch %d at 0x%04x in %s.%s %s",                 \
                 myoff, (int) (pc - curMethod->insns),                       \
                 curMethod->clazz->descriptor, curMethod->name, desc);       \
             free(desc);                                                     \
@@ -129,10 +121,10 @@
         char debugStrBuf[128];                                              \
         snprintf(debugStrBuf, sizeof(debugStrBuf), __VA_ARGS__);            \
         if (curMethod != NULL)                                              \
-            ALOG(_level, LOG_TAG"i", "%-2d|%04x%s",                          \
+            LOG(_level, LOG_TAG"i", "%-2d|%04x%s",                          \
                 self->threadId, (int)(pc - curMethod->insns), debugStrBuf); \
         else                                                                \
-            ALOG(_level, LOG_TAG"i", "%-2d|####%s",                          \
+            LOG(_level, LOG_TAG"i", "%-2d|####%s",                          \
                 self->threadId, debugStrBuf);                               \
     } while(false)
 void dvmDumpRegs(const Method* method, const u4* framePtr, bool inOnly);
@@ -321,15 +313,15 @@ static inline bool checkForNull(Object* obj)
         return false;
     }
 #ifdef WITH_EXTRA_OBJECT_VALIDATION
-    if (!dvmIsHeapAddress(obj)) {
-        ALOGE("Invalid object %p", obj);
+    if (!dvmIsHeapAddressObject(obj)) {
+        LOGE("Invalid object %p", obj);
         dvmAbort();
     }
 #endif
 #ifndef NDEBUG
     if (obj->clazz == NULL || ((u4) obj->clazz) <= 65536) {
         /* probable heap corruption */
-        ALOGE("Invalid object class %p (in %p)", obj->clazz, obj);
+        LOGE("Invalid object class %p (in %p)", obj->clazz, obj);
         dvmAbort();
     }
 #endif
@@ -354,14 +346,14 @@ static inline bool checkForNullExportPC(Object* obj, u4* fp, const u2* pc)
     }
 #ifdef WITH_EXTRA_OBJECT_VALIDATION
     if (!dvmIsHeapAddress(obj)) {
-        ALOGE("Invalid object %p", obj);
+        LOGE("Invalid object %p", obj);
         dvmAbort();
     }
 #endif
 #ifndef NDEBUG
     if (obj->clazz == NULL || ((u4) obj->clazz) <= 65536) {
         /* probable heap corruption */
-        ALOGE("Invalid object class %p (in %p)", obj->clazz, obj);
+        LOGE("Invalid object class %p (in %p)", obj->clazz, obj);
         dvmAbort();
     }
 #endif

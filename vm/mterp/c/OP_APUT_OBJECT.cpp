@@ -22,9 +22,9 @@ HANDLE_OPCODE(OP_APUT_OBJECT /*vAA, vBB, vCC*/)
             if (!checkForNull(obj))
                 GOTO_exceptionThrown();
             if (!dvmCanPutArrayElement(obj->clazz, arrayObj->clazz)) {
-                ALOGV("Can't put a '%s'(%p) into array type='%s'(%p)",
+                LOGV("Can't put a '%s'(%p) into array type='%s'(%p)",
                     obj->clazz->descriptor, obj,
-                    arrayObj->clazz->descriptor, arrayObj);
+                    arrayObj->obj.clazz->descriptor, arrayObj);
                 dvmThrowArrayStoreExceptionIncompatibleElement(obj->clazz, arrayObj->clazz);
                 GOTO_exceptionThrown();
             }

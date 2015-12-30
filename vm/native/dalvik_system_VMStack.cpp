@@ -97,14 +97,14 @@ static void Dalvik_dalvik_system_VMStack_getClasses(const u4* args,
     ClassObject* classArrayClass = dvmFindArrayClass("[Ljava/lang/Class;",
                                                      NULL);
     if (classArrayClass == NULL) {
-        ALOGW("Unable to find java.lang.Class array class");
+        LOGW("Unable to find java.lang.Class array class");
         return;
     }
     ArrayObject* classes = dvmAllocArrayByClass(classArrayClass,
                                                 size,
                                                 ALLOC_DEFAULT);
     if (classes == NULL) {
-        ALOGW("Unable to allocate class array of %zd elements", size);
+        LOGW("Unable to allocate class array of %zd elements", size);
         return;
     }
 
@@ -150,7 +150,7 @@ static int* getTraceBuf(Object* targetThreadObj, size_t* pStackDepth)
             break;
     }
     if (thread == NULL) {
-        ALOGI("VMStack.getTraceBuf: threadObj %p not active",
+        LOGI("VMStack.getTraceBuf: threadObj %p not active",
             targetThreadObj);
         dvmUnlockThreadList();
         return NULL;

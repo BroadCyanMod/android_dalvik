@@ -42,7 +42,8 @@ BitVector* dvmAllocBitVector(unsigned int startBits, bool expandable)
 
     bv->storageSize = count;
     bv->expandable = expandable;
-    bv->storage = (u4*) calloc(count, sizeof(u4));
+    bv->storage = (u4*) malloc(count * sizeof(u4));
+    memset(bv->storage, 0x00, count * sizeof(u4));
     return bv;
 }
 
@@ -103,7 +104,7 @@ void dvmSetBit(BitVector* pBits, unsigned int num)
 {
     if (num >= pBits->storageSize * sizeof(u4) * 8) {
         if (!pBits->expandable) {
-            ALOGE("Attempt to set bit outside valid range (%d, limit is %d)",
+            LOGE("Attempt to set bit outside valid range (%d, limit is %d)",
                 num, pBits->storageSize * sizeof(u4) * 8);
             dvmAbort();
         }
@@ -113,7 +114,7 @@ void dvmSetBit(BitVector* pBits, unsigned int num)
         assert(newSize > pBits->storageSize);
         pBits->storage = (u4*)realloc(pBits->storage, newSize * sizeof(u4));
         if (pBits->storage == NULL) {
-            ALOGE("BitVector expansion to %d failed", newSize * sizeof(u4));
+            LOGE("BitVector expansion to %d failed", newSize * sizeof(u4));
             dvmAbort();
         }
         memset(&pBits->storage[pBits->storageSize], 0x00,
@@ -205,7 +206,7 @@ int dvmCountSetBits(const BitVector* pBits)
 static void checkSizes(const BitVector* bv1, const BitVector* bv2)
 {
     if (bv1->storageSize != bv2->storageSize) {
-        ALOGE("Mismatched vector sizes (%d, %d)",
+        LOGE("Mismatched vector sizes (%d, %d)",
             bv1->storageSize, bv2->storageSize);
         dvmAbort();
     }

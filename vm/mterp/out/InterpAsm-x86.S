@@ -58,8 +58,8 @@ will also have an associated spill location (mostly useful for those assigned
 to callee save registers).
 
   nick     reg   purpose
-  rPC      esi   interpreted program counter, used for fetching instructions
-  rFP      edi   interpreted frame pointer, used for accessing locals and args
+  rPC      edi   interpreted program counter, used for fetching instructions
+  rFP      esi   interpreted frame pointer, used for accessing locals and args
   rINSTw   bx    first 16-bit code of current instruction
   rINSTbl  bl    opcode portion of instruction word
   rINSTbh  bh    high byte of inst word, usually contains src/tgt reg names
@@ -106,14 +106,7 @@ Notes:
 #define OUT_ARG2       (  8)
 #define OUT_ARG1       (  4)
 #define OUT_ARG0       (  0)  /* <- dvmMterpStdRun esp */
-#if defined(WITH_JIT)
-/* for spill region: increase size by 48 (to keep 16-byte alignment) */
-/* 76 + 48 = 124 */
-#define JIT_SPILL      (-56)
-#define FRAME_SIZE     124
-#else
 #define FRAME_SIZE     76
-#endif
 
 #define SPILL(reg) movl reg##,reg##_SPILL(%ebp)
 #define UNSPILL(reg) movl reg##_SPILL(%ebp),reg
@@ -161,10 +154,6 @@ Notes:
  */
 .macro EXPORT_PC
     movl     rPC, (-sizeofStackSaveArea + offStackSaveArea_currentPc)(rFP)
-.endm
-
-.macro GET_PC
-    movl     (-sizeofStackSaveArea + offStackSaveArea_currentPc)(rFP), rPC
 .endm
 
 /*
@@ -244,6 +233,16 @@ Notes:
      jmp     *(rIBASE,\_reg,4)
 .endm
 
+   /*
+    * Jumbo version of GOTO_NEXT that assumes _reg preloaded with table
+    * offset of the jumbo instruction, which is the top half of the extended
+    * opcode + 0x100.  Loads rINST with BBBB field, similar to GOTO_NEXT_R
+    */
+.macro GOTO_NEXT_JUMBO_R _reg
+     movzwl  6(rPC),rINST
+     jmp     *(rIBASE,\_reg,4)
+.endm
+
 /*
  * Get/set the 32-bit value from a Dalvik register.
  */
@@ -266,13 +265,6 @@ Notes:
 #define sReg0 LOCAL0_OFFSET(%ebp)
 #define sReg1 LOCAL1_OFFSET(%ebp)
 #define sReg2 LOCAL2_OFFSET(%ebp)
-
-   /*
-    * x86 JIT Helpers
-    */
-
-    .macro dumpSwitch _regData _regScratch1 _regScratch2
-    .endm
 
    /*
     * Hard coded helper values.
@@ -1025,12 +1017,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax               # eax<- BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- pDvmDex
     SPILL(rIBASE)
-    SPILL_TMP2(%ebx)
     movl      offDvmDex_pResClasses(%ecx),%ecx # ecx<- pDvmDex->pResClasses
     EXPORT_PC
-#if defined(WITH_JIT)
-    lea       (%ecx,%eax,4),%ebx        # ebx <- &resolved class
-#endif
     movl      (%ecx,%eax,4),%ecx        # ecx<- resolved class
     testl     %ecx,%ecx                 # resolved?
     je        .LOP_NEW_INSTANCE_resolve       # no, go do it
@@ -1041,47 +1029,13 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      $ALLOC_DONT_TRACK,OUT_ARG1(%esp)
     movl     %ecx,OUT_ARG0(%esp)
     call     dvmAllocObject             # eax<- new object
+    FETCH_INST_OPCODE 2 %ecx
+    UNSPILL(rIBASE)
     testl    %eax,%eax                  # success?
     je       common_exceptionThrown     # no, bail out
-#if defined(WITH_JIT)
-        /*
-     * The JIT needs the class to be fully resolved before it can
-     * include this instruction in a trace.
-     */
-    movl    rSELF, %ecx
-    movl    offThread_subMode(%ecx), %ecx
-    andl    $kSubModeJitTraceBuild, %ecx # under construction?
-    jne     .LOP_NEW_INSTANCE_jitCheck
-#endif
-.LOP_NEW_INSTANCE_end:
-    UNSPILL_TMP2(%ebx)
     SET_VREG %eax rINST
-    UNSPILL(rIBASE)
-    FETCH_INST_OPCODE 2 %ecx
     ADVANCE_PC 2
     GOTO_NEXT_R %ecx
-
-#if defined(WITH_JIT)
-    /*
-     * Check to see if we need to stop the trace building early.
-     * eax: new object
-     */
-.LOP_NEW_INSTANCE_jitCheck:
-    cmp     $0, (%ebx)                   # okay?
-    jne     .LOP_NEW_INSTANCE_end        # yes, finish
-    SPILL_TMP1(%eax)                     # preserve new object
-    movl    rSELF, %ecx
-    movl    %ecx, OUT_ARG0(%esp)
-    movl    rPC, OUT_ARG1(%esp)
-    call    dvmJitEndTraceSelect         # (self, pc)
-    UNSPILL_TMP1(%eax)
-    UNSPILL_TMP2(%ebx)
-    SET_VREG %eax rINST                  # vAA <- new object
-    UNSPILL(rIBASE)
-    FETCH_INST_OPCODE 2 %ecx
-    ADVANCE_PC 2
-    GOTO_NEXT_R %ecx
-#endif
 
     /*
      * Class initialization required.
@@ -1491,11 +1445,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl    offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 /* ------------------------------ */
@@ -1512,11 +1461,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl    offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 /* ------------------------------ */
@@ -1533,11 +1477,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl    offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 /* ------------------------------ */
@@ -1563,11 +1502,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     ADVANCE_PC_INDEXED %eax
     movl    offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 /* ------------------------------ */
@@ -1594,11 +1528,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     ADVANCE_PC_INDEXED %eax
     movl    offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1803,11 +1732,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1836,11 +1760,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1869,11 +1788,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1902,11 +1816,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1935,11 +1844,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1968,11 +1872,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl     offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -1989,19 +1888,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     jne   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -2018,19 +1912,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     je   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -2047,19 +1936,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     jge   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -2076,19 +1960,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     jl   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -2105,19 +1984,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     jle   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -2134,19 +2008,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* if-cmp vAA, +BBBB */
     cmpl     $0,(rFP,rINST,4)     # compare (vA, 0)
-    movl     rSELF,%ecx
     movl     $2,%eax              # assume branch not taken
     jg   1f
+    movl     rSELF,%ecx
     movswl   2(rPC),%eax           # fetch signed displacement
     movl     offThread_curHandlerTable(%ecx),rIBASE
 1:
     FETCH_INST_INDEXED %eax
     ADVANCE_PC_INDEXED %eax
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT
 
 
@@ -3387,12 +3256,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_resolve                # if not, make it so
@@ -3418,14 +3281,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_finish                 # success, continue
+    jne      .LOP_SGET_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 /* ------------------------------ */
 .L_OP_SGET_WIDE: /* 0x61 */
@@ -3439,12 +3296,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_WIDE_resolve                # if not, make it so
@@ -3472,14 +3323,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_WIDE_finish                 # success, continue
+    jne      .LOP_SGET_WIDE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 /* ------------------------------ */
 .L_OP_SGET_OBJECT: /* 0x62 */
@@ -3495,12 +3340,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_OBJECT_resolve                # if not, make it so
@@ -3526,14 +3365,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_OBJECT_finish                 # success, continue
+    jne      .LOP_SGET_OBJECT_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -3550,12 +3383,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_BOOLEAN_resolve                # if not, make it so
@@ -3581,14 +3408,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_BOOLEAN_finish                 # success, continue
+    jne      .LOP_SGET_BOOLEAN_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -3605,12 +3426,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_BYTE_resolve                # if not, make it so
@@ -3636,14 +3451,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_BYTE_finish                 # success, continue
+    jne      .LOP_SGET_BYTE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -3660,12 +3469,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_CHAR_resolve                # if not, make it so
@@ -3691,14 +3494,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_CHAR_finish                 # success, continue
+    jne      .LOP_SGET_CHAR_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -3715,12 +3512,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_SHORT_resolve                # if not, make it so
@@ -3746,14 +3537,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_SHORT_finish                 # success, continue
+    jne      .LOP_SGET_SHORT_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -3769,12 +3554,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_resolve                # if not, make it so
@@ -3791,7 +3570,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -3800,14 +3579,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_finish                 # success, continue
+    jne      .LOP_SPUT_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 /* ------------------------------ */
 .L_OP_SPUT_WIDE: /* 0x68 */
 /* File: x86/OP_SPUT_WIDE.S */
@@ -3821,12 +3595,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_WIDE_resolve                # if not, make it so
@@ -3854,14 +3622,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_WIDE_finish                 # success, continue
+    jne      .LOP_SPUT_WIDE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 /* ------------------------------ */
 .L_OP_SPUT_OBJECT: /* 0x69 */
@@ -3874,12 +3636,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_OBJECT_resolve                # if not, make it so
@@ -3911,14 +3667,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_OBJECT_finish                 # success, continue
+    jne      .LOP_SPUT_OBJECT_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 /* ------------------------------ */
 .L_OP_SPUT_BOOLEAN: /* 0x6a */
@@ -3934,12 +3684,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_BOOLEAN_resolve                # if not, make it so
@@ -3956,7 +3700,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_BOOLEAN_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -3965,14 +3709,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_BOOLEAN_finish                 # success, continue
+    jne      .LOP_SPUT_BOOLEAN_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 
 /* ------------------------------ */
 .L_OP_SPUT_BYTE: /* 0x6b */
@@ -3988,12 +3727,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_BYTE_resolve                # if not, make it so
@@ -4010,7 +3743,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_BYTE_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -4019,14 +3752,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_BYTE_finish                 # success, continue
+    jne      .LOP_SPUT_BYTE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 
 /* ------------------------------ */
 .L_OP_SPUT_CHAR: /* 0x6c */
@@ -4042,12 +3770,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_CHAR_resolve                # if not, make it so
@@ -4064,7 +3786,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_CHAR_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -4073,14 +3795,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_CHAR_finish                 # success, continue
+    jne      .LOP_SPUT_CHAR_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 
 /* ------------------------------ */
 .L_OP_SPUT_SHORT: /* 0x6d */
@@ -4096,12 +3813,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_SHORT_resolve                # if not, make it so
@@ -4118,7 +3829,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_SHORT_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -4127,14 +3838,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_SHORT_finish                 # success, continue
+    jne      .LOP_SPUT_SHORT_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 
 /* ------------------------------ */
 .L_OP_INVOKE_VIRTUAL: /* 0x6e */
@@ -4179,9 +3885,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    offMethod_methodIndex(%eax),%eax  # eax<- baseMethod->methodIndex
     testl     %ecx,%ecx                 # null this?
     je        common_errNullObject      # go if so
-    movl      offObject_clazz(%ecx),%edx  # edx<- thisPtr->clazz
-    movl      offClassObject_vtable(%edx),%edx # edx<- thisPtr->clazz->vtable
-    movl      (%edx,%eax,4),%eax        # eax<- vtable[methodIndex]
+    movl      offObject_clazz(%ecx),%ecx  # ecx<- thisPtr->clazz
+    movl      offClassObject_vtable(%ecx),%ecx # ecx<- thisPtr->clazz->vtable
+    movl      (%ecx,%eax,4),%eax        # eax<- vtable[methodIndex]
     jmp       common_invokeMethodNoRange
 
 /* ------------------------------ */
@@ -4205,9 +3911,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     .if       (!0)
     andl      $0xf,rINST               # rINST<- D (or stays CCCC)
     .endif
-    GET_VREG_R  %edx rINST             # %edx<- "this" ptr
-    testl     %edx,%edx                # null "this"?
-    SPILL_TMP1(%edx)
+    GET_VREG_R  rINST rINST             # rINST<- "this" ptr
+    testl     rINST,rINST               # null "this"?
     je        common_errNullObject      # yes, throw
     movl      offMethod_clazz(%eax),%eax # eax<- method->clazz
     testl     %ecx,%ecx                 # already resolved?
@@ -4219,13 +3924,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
 .LOP_INVOKE_SUPER_continue:
     movl    offClassObject_super(%eax),%eax   # eax<- method->clazz->super
-    movzwl  offMethod_methodIndex(%ecx),%edx  # edx<- baseMthod->methodIndex
-    cmpl    offClassObject_vtableCount(%eax),%edx # compare(methodIndex,vtableCount)
+    movzwl  offMethod_methodIndex(%ecx),%ecx  # ecx<- baseMthod->methodIndex
+    cmpl    offClassObject_vtableCount(%eax),%ecx # compare(methodIndex,vtableCount)
     jae     .LOP_INVOKE_SUPER_nsm           # method not present in superclass
     movl    offClassObject_vtable(%eax),%eax   # eax<- ...clazz->super->vtable
-    movl    (%eax,%edx,4),%eax        # eax<- vtable[methodIndex]
-    UNSPILL_TMP1(%edx)
-    movl    %edx, %ecx
+    movl    (%eax,%ecx,4),%eax        # eax<- vtable[methodIndex]
     jmp     common_invokeMethodNoRange
 
 
@@ -4234,7 +3937,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      * eax = method->clazz
     */
 .LOP_INVOKE_SUPER_resolve:
-    SPILL_TMP2(%eax)                    # method->clazz
+    SPILL_TMP1(%eax)                    # method->clazz
     movl    %eax,OUT_ARG0(%esp)         # arg0<- method->clazz
     movzwl  2(rPC),%ecx                 # ecx<- BBBB
     movl    $METHOD_VIRTUAL,OUT_ARG2(%esp)  # arg2<- resolver method type
@@ -4242,7 +3945,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call    dvmResolveMethod            # eax<- call(clazz, ref, flags)
     testl   %eax,%eax                   # got null?
     movl    %eax,%ecx                   # ecx<- resolved base method
-    UNSPILL_TMP2(%eax)                  # restore method->clazz
+    UNSPILL_TMP1(%eax)                  # restore method->clazz
     jne     .LOP_INVOKE_SUPER_continue        # good to go - continue
     jmp     common_exceptionThrown      # handle exception
 
@@ -4323,17 +4026,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
     EXPORT_PC
     movl      offDvmDex_pResMethods(%ecx),%ecx  # ecx<- pDvmDex->pResMethods
-#if defined(WITH_JIT)
-    movl     %edx, TMP_SPILL1(%ebp)
-    lea      (%ecx,%eax,4), %edx
-    movl     %edx, TMP_SPILL2(%ebp)
-    movl     TMP_SPILL1(%ebp), %edx
-#endif
     movl      (%ecx,%eax,4),%eax        # eax<- resolved methodToCall
-    movl      $0, %ecx                 # make "this" null
     testl     %eax,%eax
     jne       common_invokeMethodNoRange
-
     movl      rSELF,%ecx
     movl      offThread_method(%ecx),%ecx # ecx<- self->method
     movzwl    2(rPC),%eax
@@ -4342,40 +4037,10 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      %ecx,OUT_ARG0(%esp)       # arg0<- clazz
     movl      $METHOD_STATIC,%eax
     movl      %eax,OUT_ARG2(%esp)       # arg2<- flags
-    SPILL(rIBASE)
     call      dvmResolveMethod          # call(clazz,ref,flags)
-    UNSPILL(rIBASE)
     testl     %eax,%eax                 # got null?
-#if defined(WITH_JIT)
-    movl      TMP_SPILL1(%ebp), %edx
-    movl      rSELF,%ecx
-    movzwl    offThread_subMode(%ecx), %ecx
-    je        common_exceptionThrown    # null, handle exception
-    andl      $kSubModeJitTraceBuild, %ecx # is trace under construction?
-    movl      $0, %ecx                 # make "this" null
-    je        common_invokeMethodNoRange # no (%eax=method, %ecx="this")
-    movl      TMP_SPILL2(%ebp), %edx
-    cmpl      $0, (%edx)                  # finished resolving
-    movl      TMP_SPILL1(%ebp), %edx
-    jne        common_invokeMethodNoRange # yes (%eax=method, %ecx="this")
-    movl      rSELF, %edx
-    movl      %edx, OUT_ARG0(%esp)
-    movl      rPC, OUT_ARG1(%esp)
-    movl      %eax, TMP_SPILL2(%ebp)
-    movl      %ecx, TMP_SPILL3(%ebp)
-    SPILL(rIBASE)
-    call      dvmJitEndTraceSelect
-    UNSPILL(rIBASE)
-    movl      TMP_SPILL1(%ebp), %edx
-    movl      TMP_SPILL2(%ebp), %eax
-    movl      TMP_SPILL3(%ebp), %ecx
-    jmp       common_invokeMethodNoRange
-#else
-    movl      $0, %ecx                 # make "this" null
     jne       common_invokeMethodNoRange
     jmp       common_exceptionThrown
-#endif
-
 
 /* ------------------------------ */
 .L_OP_INVOKE_INTERFACE: /* 0x72 */
@@ -4396,7 +4061,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     EXPORT_PC
     testl      %eax,%eax                # null this?
     je         common_errNullObject     # yes, fail
-    movl       %eax, TMP_SPILL1(%ebp)
     movl       offObject_clazz(%eax),%eax# eax<- thisPtr->clazz
     movl       %eax,OUT_ARG0(%esp)                 # arg0<- class
     movl       offThread_methodClassDex(%ecx),%eax   # eax<- methodClassDex
@@ -4408,7 +4072,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call       dvmFindInterfaceMethodInCache # eax<- call(class, ref, method, dex)
     testl      %eax,%eax
     je         common_exceptionThrown
-    movl       TMP_SPILL1(%ebp), %ecx
     jmp        common_invokeMethodNoRange
 
 /* ------------------------------ */
@@ -4462,9 +4125,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    offMethod_methodIndex(%eax),%eax  # eax<- baseMethod->methodIndex
     testl     %ecx,%ecx                 # null this?
     je        common_errNullObject      # go if so
-    movl      offObject_clazz(%ecx),%edx  # edx<- thisPtr->clazz
-    movl      offClassObject_vtable(%edx),%edx # edx<- thisPtr->clazz->vtable
-    movl      (%edx,%eax,4),%eax        # eax<- vtable[methodIndex]
+    movl      offObject_clazz(%ecx),%ecx  # ecx<- thisPtr->clazz
+    movl      offClassObject_vtable(%ecx),%ecx # ecx<- thisPtr->clazz->vtable
+    movl      (%ecx,%eax,4),%eax        # eax<- vtable[methodIndex]
     jmp       common_invokeMethodRange
 
 
@@ -4490,9 +4153,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     .if       (!1)
     andl      $0xf,rINST               # rINST<- D (or stays CCCC)
     .endif
-    GET_VREG_R  %edx rINST             # %edx<- "this" ptr
-    testl     %edx,%edx                # null "this"?
-    SPILL_TMP1(%edx)
+    GET_VREG_R  rINST rINST             # rINST<- "this" ptr
+    testl     rINST,rINST               # null "this"?
     je        common_errNullObject      # yes, throw
     movl      offMethod_clazz(%eax),%eax # eax<- method->clazz
     testl     %ecx,%ecx                 # already resolved?
@@ -4504,13 +4166,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
 .LOP_INVOKE_SUPER_RANGE_continue:
     movl    offClassObject_super(%eax),%eax   # eax<- method->clazz->super
-    movzwl  offMethod_methodIndex(%ecx),%edx  # edx<- baseMthod->methodIndex
-    cmpl    offClassObject_vtableCount(%eax),%edx # compare(methodIndex,vtableCount)
+    movzwl  offMethod_methodIndex(%ecx),%ecx  # ecx<- baseMthod->methodIndex
+    cmpl    offClassObject_vtableCount(%eax),%ecx # compare(methodIndex,vtableCount)
     jae     .LOP_INVOKE_SUPER_RANGE_nsm           # method not present in superclass
     movl    offClassObject_vtable(%eax),%eax   # eax<- ...clazz->super->vtable
-    movl    (%eax,%edx,4),%eax        # eax<- vtable[methodIndex]
-    UNSPILL_TMP1(%edx)
-    movl    %edx, %ecx
+    movl    (%eax,%ecx,4),%eax        # eax<- vtable[methodIndex]
     jmp     common_invokeMethodRange
 
 
@@ -4519,7 +4179,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      * eax = method->clazz
     */
 .LOP_INVOKE_SUPER_RANGE_resolve:
-    SPILL_TMP2(%eax)                    # method->clazz
+    SPILL_TMP1(%eax)                    # method->clazz
     movl    %eax,OUT_ARG0(%esp)         # arg0<- method->clazz
     movzwl  2(rPC),%ecx                 # ecx<- BBBB
     movl    $METHOD_VIRTUAL,OUT_ARG2(%esp)  # arg2<- resolver method type
@@ -4527,7 +4187,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call    dvmResolveMethod            # eax<- call(clazz, ref, flags)
     testl   %eax,%eax                   # got null?
     movl    %eax,%ecx                   # ecx<- resolved base method
-    UNSPILL_TMP2(%eax)                  # restore method->clazz
+    UNSPILL_TMP1(%eax)                  # restore method->clazz
     jne     .LOP_INVOKE_SUPER_RANGE_continue        # good to go - continue
     jmp     common_exceptionThrown      # handle exception
 
@@ -4612,17 +4272,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
     EXPORT_PC
     movl      offDvmDex_pResMethods(%ecx),%ecx  # ecx<- pDvmDex->pResMethods
-#if defined(WITH_JIT)
-    movl     %edx, TMP_SPILL1(%ebp)
-    lea      (%ecx,%eax,4), %edx
-    movl     %edx, TMP_SPILL2(%ebp)
-    movl     TMP_SPILL1(%ebp), %edx
-#endif
     movl      (%ecx,%eax,4),%eax        # eax<- resolved methodToCall
-    movl      $0, %ecx                 # make "this" null
     testl     %eax,%eax
     jne       common_invokeMethodRange
-
     movl      rSELF,%ecx
     movl      offThread_method(%ecx),%ecx # ecx<- self->method
     movzwl    2(rPC),%eax
@@ -4631,40 +4283,10 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      %ecx,OUT_ARG0(%esp)       # arg0<- clazz
     movl      $METHOD_STATIC,%eax
     movl      %eax,OUT_ARG2(%esp)       # arg2<- flags
-    SPILL(rIBASE)
     call      dvmResolveMethod          # call(clazz,ref,flags)
-    UNSPILL(rIBASE)
     testl     %eax,%eax                 # got null?
-#if defined(WITH_JIT)
-    movl      TMP_SPILL1(%ebp), %edx
-    movl      rSELF,%ecx
-    movzwl    offThread_subMode(%ecx), %ecx
-    je        common_exceptionThrown    # null, handle exception
-    andl      $kSubModeJitTraceBuild, %ecx # is trace under construction?
-    movl      $0, %ecx                 # make "this" null
-    je        common_invokeMethodRange # no (%eax=method, %ecx="this")
-    movl      TMP_SPILL2(%ebp), %edx
-    cmpl      $0, (%edx)                  # finished resolving
-    movl      TMP_SPILL1(%ebp), %edx
-    jne        common_invokeMethodRange # yes (%eax=method, %ecx="this")
-    movl      rSELF, %edx
-    movl      %edx, OUT_ARG0(%esp)
-    movl      rPC, OUT_ARG1(%esp)
-    movl      %eax, TMP_SPILL2(%ebp)
-    movl      %ecx, TMP_SPILL3(%ebp)
-    SPILL(rIBASE)
-    call      dvmJitEndTraceSelect
-    UNSPILL(rIBASE)
-    movl      TMP_SPILL1(%ebp), %edx
-    movl      TMP_SPILL2(%ebp), %eax
-    movl      TMP_SPILL3(%ebp), %ecx
-    jmp       common_invokeMethodRange
-#else
-    movl      $0, %ecx                 # make "this" null
     jne       common_invokeMethodRange
     jmp       common_exceptionThrown
-#endif
-
 
 
 /* ------------------------------ */
@@ -4687,7 +4309,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     EXPORT_PC
     testl      %eax,%eax                # null this?
     je         common_errNullObject     # yes, fail
-    movl       %eax, TMP_SPILL1(%ebp)
     movl       offObject_clazz(%eax),%eax# eax<- thisPtr->clazz
     movl       %eax,OUT_ARG0(%esp)                 # arg0<- class
     movl       offThread_methodClassDex(%ecx),%eax   # eax<- methodClassDex
@@ -4699,7 +4320,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call       dvmFindInterfaceMethodInCache # eax<- call(class, ref, method, dex)
     testl      %eax,%eax
     je         common_exceptionThrown
-    movl       TMP_SPILL1(%ebp), %ecx
     jmp        common_invokeMethodRange
 
 
@@ -6040,56 +5660,62 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 /* ------------------------------ */
 .L_OP_ADD_DOUBLE: /* 0xab */
 /* File: x86/OP_ADD_DOUBLE.S */
-   /*
-    * File: OP_ADD_DOUBLE.S
-    */
-
-    movzbl   2(rPC),%eax                # eax<- BB
-    movzbl   3(rPC),%ecx                # ecx<- CC
-    movq     (rFP, %eax, 4), %xmm0      # %xmm0<- vBB
-    movq     (rFP, %ecx, 4), %xmm1      # %xmm1<- vCC
+/* File: x86/binflop.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
+    /* binop vAA, vBB, vCC */
+    movzbl   2(rPC),%eax          # eax<- CC
+    movzbl   3(rPC),%ecx          # ecx<- BB
+    fldl    (rFP,%eax,4)         # vCC to fp stack
+    faddl   (rFP,%ecx,4)         # ex: faddp
     FETCH_INST_OPCODE 2 %ecx
-    addsd    %xmm1, %xmm0
     ADVANCE_PC 2
-    movq     %xmm0, (rFP, rINST, 4)     # vAA<- vBB * vCC
+    fstpl   (rFP,rINST,4)         # %st to vAA
     GOTO_NEXT_R %ecx
 
 
 /* ------------------------------ */
 .L_OP_SUB_DOUBLE: /* 0xac */
 /* File: x86/OP_SUB_DOUBLE.S */
-   /*
-    * File: OP_SUB_DOUBLE.S
-    */
-
-    movzbl   2(rPC),%eax                # eax<- BB
-    movzbl   3(rPC),%ecx                # ecx<- CC
-    # TODO: movsd?
-    movq        (rFP, %eax, 4), %xmm0   # %xmm0<- vBB
-    movq        (rFP, %ecx, 4), %xmm1   # %xmm1<- vCC
+/* File: x86/binflop.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
+    /* binop vAA, vBB, vCC */
+    movzbl   2(rPC),%eax          # eax<- CC
+    movzbl   3(rPC),%ecx          # ecx<- BB
+    fldl    (rFP,%eax,4)         # vCC to fp stack
+    fsubl   (rFP,%ecx,4)         # ex: faddp
     FETCH_INST_OPCODE 2 %ecx
-    subsd       %xmm1, %xmm0
     ADVANCE_PC 2
-    movq        %xmm0, (rFP, rINST, 4)  # vAA<- vBB - vCC
+    fstpl   (rFP,rINST,4)         # %st to vAA
     GOTO_NEXT_R %ecx
+
 
 /* ------------------------------ */
 .L_OP_MUL_DOUBLE: /* 0xad */
 /* File: x86/OP_MUL_DOUBLE.S */
-   /*
-    * File: OP_MUL_DOUBLE.S
-    */
-
-    movzbl   2(rPC),%eax                # eax<- BB
-    movzbl   3(rPC),%ecx                # ecx<- CC
-    # TODO: movsd?
-    movq        (rFP, %eax, 4), %xmm0   # %xmm0<- vBB
-    movq        (rFP, %ecx, 4), %xmm1   # %xmm1<- vCC
+/* File: x86/binflop.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
+    /* binop vAA, vBB, vCC */
+    movzbl   2(rPC),%eax          # eax<- CC
+    movzbl   3(rPC),%ecx          # ecx<- BB
+    fldl    (rFP,%eax,4)         # vCC to fp stack
+    fmull   (rFP,%ecx,4)         # ex: faddp
     FETCH_INST_OPCODE 2 %ecx
-    mulsd       %xmm1, %xmm0
     ADVANCE_PC 2
-    movq        %xmm0, (rFP, rINST, 4)  # vAA<- vBB * vCC
+    fstpl   (rFP,rINST,4)         # %st to vAA
     GOTO_NEXT_R %ecx
+
 
 /* ------------------------------ */
 .L_OP_DIV_DOUBLE: /* 0xae */
@@ -6137,7 +5763,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an instruction or a function call.
+     * This could be an ARM instruction or a function call.  (If the result
+     * comes back in a register other than r0, you can override "result".)
+     *
+     * If "chkzero" is set to 1, we perform a divide-by-zero check on
+     * vCC (r1).  Useful for integer division and modulus.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -6146,7 +5776,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* binop/2addr vA, vB */
     movzx   rINSTbl,%ecx               # ecx<- A+
-    sarl    $4,rINST                  # rINST<- B
+    sarl    $4,rINST                 # rINST<- B
     GET_VREG_R %eax rINST              # eax<- vB
     andb    $0xf,%cl                  # ecx<- A
     addl     %eax,(rFP,%ecx,4)                             # for ex: addl   %eax,(rFP,%ecx,4)
@@ -6162,7 +5792,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an instruction or a function call.
+     * This could be an ARM instruction or a function call.  (If the result
+     * comes back in a register other than r0, you can override "result".)
+     *
+     * If "chkzero" is set to 1, we perform a divide-by-zero check on
+     * vCC (r1).  Useful for integer division and modulus.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -6171,7 +5805,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* binop/2addr vA, vB */
     movzx   rINSTbl,%ecx               # ecx<- A+
-    sarl    $4,rINST                  # rINST<- B
+    sarl    $4,rINST                 # rINST<- B
     GET_VREG_R %eax rINST              # eax<- vB
     andb    $0xf,%cl                  # ecx<- A
     subl     %eax,(rFP,%ecx,4)                             # for ex: addl   %eax,(rFP,%ecx,4)
@@ -6279,7 +5913,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an instruction or a function call.
+     * This could be an ARM instruction or a function call.  (If the result
+     * comes back in a register other than r0, you can override "result".)
+     *
+     * If "chkzero" is set to 1, we perform a divide-by-zero check on
+     * vCC (r1).  Useful for integer division and modulus.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -6288,7 +5926,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* binop/2addr vA, vB */
     movzx   rINSTbl,%ecx               # ecx<- A+
-    sarl    $4,rINST                  # rINST<- B
+    sarl    $4,rINST                 # rINST<- B
     GET_VREG_R %eax rINST              # eax<- vB
     andb    $0xf,%cl                  # ecx<- A
     andl     %eax,(rFP,%ecx,4)                             # for ex: addl   %eax,(rFP,%ecx,4)
@@ -6304,7 +5942,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an instruction or a function call.
+     * This could be an ARM instruction or a function call.  (If the result
+     * comes back in a register other than r0, you can override "result".)
+     *
+     * If "chkzero" is set to 1, we perform a divide-by-zero check on
+     * vCC (r1).  Useful for integer division and modulus.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -6313,7 +5955,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* binop/2addr vA, vB */
     movzx   rINSTbl,%ecx               # ecx<- A+
-    sarl    $4,rINST                  # rINST<- B
+    sarl    $4,rINST                 # rINST<- B
     GET_VREG_R %eax rINST              # eax<- vB
     andb    $0xf,%cl                  # ecx<- A
     orl     %eax,(rFP,%ecx,4)                             # for ex: addl   %eax,(rFP,%ecx,4)
@@ -6329,7 +5971,11 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
-     * This could be an instruction or a function call.
+     * This could be an ARM instruction or a function call.  (If the result
+     * comes back in a register other than r0, you can override "result".)
+     *
+     * If "chkzero" is set to 1, we perform a divide-by-zero check on
+     * vCC (r1).  Useful for integer division and modulus.
      *
      * For: add-int/2addr, sub-int/2addr, mul-int/2addr, div-int/2addr,
      *      rem-int/2addr, and-int/2addr, or-int/2addr, xor-int/2addr,
@@ -6338,7 +5984,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* binop/2addr vA, vB */
     movzx   rINSTbl,%ecx               # ecx<- A+
-    sarl    $4,rINST                  # rINST<- B
+    sarl    $4,rINST                 # rINST<- B
     GET_VREG_R %eax rINST              # eax<- vB
     andb    $0xf,%cl                  # ecx<- A
     xorl     %eax,(rFP,%ecx,4)                             # for ex: addl   %eax,(rFP,%ecx,4)
@@ -6854,58 +6500,68 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 /* ------------------------------ */
 .L_OP_ADD_DOUBLE_2ADDR: /* 0xcb */
 /* File: x86/OP_ADD_DOUBLE_2ADDR.S */
-   /*
-    * File: OP_ADD_DOUBLE_2ADDR.S
-    */
+/* File: x86/binflop2addr.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
 
-    movzx       rINSTbl,%ecx            # ecx<- A+
-    andb        $0xf,%cl               # ecx<- A
-    sarl        $4,rINST               # rINST<- B
-    movq        (rFP, rINST, 4), %xmm1  # %xmm1<- vB
-    movq        (rFP, %ecx, 4), %xmm0   # %xmm0<- vA
+    /* binop/2addr vA, vB */
+    movzx   rINSTbl,%ecx           # ecx<- A+
+    andb    $0xf,%cl              # ecx<- A
+    fldl    (rFP,%ecx,4)          # vAA to fp stack
+    sarl    $4,rINST             # rINST<- B
+    faddl   (rFP,rINST,4)         # ex: faddp
     FETCH_INST_OPCODE 1 %eax
-    addsd       %xmm1, %xmm0            # %xmm0<- vA op vB
     ADVANCE_PC 1
-    movq        %xmm0, (rFP, %ecx, 4)   # vA<- %xmm0; result
+    fstpl    (rFP,%ecx,4)         # %st to vA
     GOTO_NEXT_R %eax
+
 
 /* ------------------------------ */
 .L_OP_SUB_DOUBLE_2ADDR: /* 0xcc */
 /* File: x86/OP_SUB_DOUBLE_2ADDR.S */
-   /*
-    * File: OP_SUB_DOUBLE_2ADDR.S
-    */
+/* File: x86/binflop2addr.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
 
-    movzx       rINSTbl,%ecx            # ecx<- A+
-    andb        $0xf,%cl               # ecx<- A
-    sarl        $4,rINST               # rINST<- B
-    # TODO: movsd?
-    movq        (rFP, rINST, 4), %xmm1  # %xmm1<- vB
-    movq        (rFP, %ecx, 4), %xmm0   # %xmm0<- vA
+    /* binop/2addr vA, vB */
+    movzx   rINSTbl,%ecx           # ecx<- A+
+    andb    $0xf,%cl              # ecx<- A
+    fldl    (rFP,%ecx,4)          # vAA to fp stack
+    sarl    $4,rINST             # rINST<- B
+    fsubl   (rFP,rINST,4)         # ex: faddp
     FETCH_INST_OPCODE 1 %eax
-    subsd       %xmm1, %xmm0            # %xmm0<- vA op vB
     ADVANCE_PC 1
-    movq        %xmm0, (rFP, %ecx, 4)   # vA<- %xmm0; result
+    fstpl    (rFP,%ecx,4)         # %st to vA
     GOTO_NEXT_R %eax
+
 
 /* ------------------------------ */
 .L_OP_MUL_DOUBLE_2ADDR: /* 0xcd */
 /* File: x86/OP_MUL_DOUBLE_2ADDR.S */
-   /*
-    * File: OP_MUL_DOUBLE_2ADDR.S
-    */
+/* File: x86/binflop2addr.S */
+    /*
+     * Generic 32-bit binary float operation.
+     *
+     * For: add-fp, sub-fp, mul-fp, div-fp
+     */
 
-    movzx       rINSTbl,%ecx            # ecx<- A+
-    andb        $0xf,%cl               # ecx<- A
-    sarl        $4,rINST               # rINST<- B
-    # TODO: movsd?
-    movq        (rFP, rINST, 4), %xmm1  # %xmm1<- vB
-    movq        (rFP, %ecx, 4), %xmm0   # %xmm0<- vA
+    /* binop/2addr vA, vB */
+    movzx   rINSTbl,%ecx           # ecx<- A+
+    andb    $0xf,%cl              # ecx<- A
+    fldl    (rFP,%ecx,4)          # vAA to fp stack
+    sarl    $4,rINST             # rINST<- B
+    fmull   (rFP,rINST,4)         # ex: faddp
     FETCH_INST_OPCODE 1 %eax
-    mulsd       %xmm1, %xmm0            # %xmm0<- vA op vB
     ADVANCE_PC 1
-    movq        %xmm0, (rFP, %ecx, 4)   # vA<- %xmm0; result
+    fstpl    (rFP,%ecx,4)         # %st to vA
     GOTO_NEXT_R %eax
+
 
 /* ------------------------------ */
 .L_OP_DIV_DOUBLE_2ADDR: /* 0xce */
@@ -7583,12 +7239,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_VOLATILE_resolve                # if not, make it so
@@ -7614,14 +7264,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_VOLATILE_finish                 # success, continue
+    jne      .LOP_SGET_VOLATILE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -7638,12 +7282,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_VOLATILE_resolve                # if not, make it so
@@ -7660,7 +7298,7 @@ dvmAsmInstructionStartCode = .L_OP_NOP
 .LOP_SPUT_VOLATILE_resolve:
     movl     rSELF,%ecx
     movzwl   2(rPC),%eax                        # eax<- field ref BBBB
-    movl     offThread_method(%ecx),%ecx        # ecx<- current method
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
     EXPORT_PC                                   # could throw, need to export
     movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
     movl     %eax,OUT_ARG1(%esp)
@@ -7669,14 +7307,9 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_VOLATILE_finish                 # success, continue
+    jne      .LOP_SPUT_VOLATILE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
 
 /* ------------------------------ */
 .L_OP_IGET_OBJECT_VOLATILE: /* 0xe7 */
@@ -7833,18 +7466,14 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      rSELF,%ecx
     EXPORT_PC
     movzwl    2(rPC),%eax               # eax<- BBBB
+    leal      offThread_retval(%ecx),%ecx # ecx<- & self->retval
     SPILL(rIBASE)                       # preserve rIBASE
-    movl      offThread_subMode(%ecx), %edx # edx<- submode flags
-    andl      $kSubModeDebugProfile, %edx # debug or profile mode active?
-    jnz       .LOP_EXECUTE_INLINE_debugprofile   # yes, take slow path
-.LOP_EXECUTE_INLINE_resume:
-    leal      offThread_retval(%ecx),%ecx # ecx<- &self->retval
     movl      %ecx,OUT_ARG4(%esp)
     call      .LOP_EXECUTE_INLINE_continue      # make call; will return after
     UNSPILL(rIBASE)                     # restore rIBASE
     testl     %eax,%eax                 # successful?
-    jz        common_exceptionThrown    # no, handle exception
     FETCH_INST_OPCODE 3 %ecx
+    je        common_exceptionThrown    # no, handle exception
     ADVANCE_PC 3
     GOTO_NEXT_R %ecx
 
@@ -7887,42 +7516,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     sall      $4,%eax      # index *= sizeof(table entry)
     jmp       *gDvmInlineOpsTable(%eax)
     # will return to caller of .LOP_EXECUTE_INLINE_continue
-
-    /*
-     * We're debugging or profiling.
-     * eax: opIndex
-     */
-.LOP_EXECUTE_INLINE_debugprofile:
-    movl      %eax,OUT_ARG0(%esp)       # arg0<- BBBB
-    SPILL_TMP1(%eax)                    # save opIndex
-    call      dvmResolveInlineNative    # dvmResolveInlineNative(opIndex)
-    movl      rSELF,%ecx                # restore self
-    testl     %eax,%eax                 # method resolved?
-    movl      %eax,%edx                 # save possibly resolved method in edx
-    UNSPILL_TMP1(%eax)                  # in case not resolved, restore opIndex
-    jz        .LOP_EXECUTE_INLINE_resume        # not resolved, just move on
-    SPILL_TMP2(%edx)                    # save method
-    movl      %edx,OUT_ARG0(%esp)       # arg0<- method
-    movl      %ecx,OUT_ARG1(%esp)       # arg1<- self
-    call      dvmFastMethodTraceEnter   # dvmFastMethodTraceEnter(method,self)
-    movl      rSELF,%ecx                # restore self
-    UNSPILL_TMP1(%eax)                  # restore opIndex
-    leal      offThread_retval(%ecx),%ecx # ecx<- &self->retval
-    movl      %ecx,OUT_ARG4(%esp)       # needed for pResult of inline operation handler
-    call      .LOP_EXECUTE_INLINE_continue      # make call; will return after
-    SPILL_TMP1(%eax)                    # save result of inline
-    UNSPILL_TMP2(%eax)                  # restore method
-    movl      rSELF,%ecx                # restore self
-    movl      %eax,OUT_ARG0(%esp)       # arg0<- method
-    movl      %ecx,OUT_ARG1(%esp)       # arg1<- self
-    call      dvmFastNativeMethodTraceExit # dvmFastNativeMethodTraceExit(method,self)
-    UNSPILL(rIBASE)                     # restore rIBASE
-    UNSPILL_TMP1(%eax)                  # restore result of inline
-    testl     %eax,%eax                 # successful?
-    jz        common_exceptionThrown    # no, handle exception
-    FETCH_INST_OPCODE 3 %ecx
-    ADVANCE_PC 3
-    GOTO_NEXT_R %ecx
 
 /* ------------------------------ */
 .L_OP_EXECUTE_INLINE_RANGE: /* 0xef */
@@ -8090,18 +7683,18 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    movzwl    4(rPC),%ecx               # eax<- FEDC or CCCC
-    movzwl    2(rPC),%edx               # ecx<- BBBB
+    movzwl    4(rPC),%eax               # eax<- FEDC or CCCC
+    movzwl    2(rPC),%ecx               # ecx<- BBBB
     .if     (!0)
-    andl      $0xf,%ecx                # eax<- C (or stays CCCC)
+    andl      $0xf,%eax                # eax<- C (or stays CCCC)
     .endif
-    GET_VREG_R  %ecx %ecx               # ecx<- vC ("this" ptr)
-    testl     %ecx,%ecx                 # null?
+    GET_VREG_R  %eax %eax               # eax<- vC ("this" ptr)
+    testl     %eax,%eax                 # null?
     je        common_errNullObject      # yep, throw exception
-    movl      offObject_clazz(%ecx),%eax # eax<- thisPtr->clazz
+    movl      offObject_clazz(%eax),%eax # eax<- thisPtr->clazz
     movl      offClassObject_vtable(%eax),%eax # eax<- thisPtr->clazz->vtable
     EXPORT_PC                           # might throw later - get ready
-    movl      (%eax,%edx,4),%eax        # eax<- vtable[BBBB]
+    movl      (%eax,%ecx,4),%eax        # eax<- vtable[BBBB]
     jmp       common_invokeMethodNoRange
 
 /* ------------------------------ */
@@ -8115,18 +7708,18 @@ dvmAsmInstructionStartCode = .L_OP_NOP
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    movzwl    4(rPC),%ecx               # eax<- FEDC or CCCC
-    movzwl    2(rPC),%edx               # ecx<- BBBB
+    movzwl    4(rPC),%eax               # eax<- FEDC or CCCC
+    movzwl    2(rPC),%ecx               # ecx<- BBBB
     .if     (!1)
-    andl      $0xf,%ecx                # eax<- C (or stays CCCC)
+    andl      $0xf,%eax                # eax<- C (or stays CCCC)
     .endif
-    GET_VREG_R  %ecx %ecx               # ecx<- vC ("this" ptr)
-    testl     %ecx,%ecx                 # null?
+    GET_VREG_R  %eax %eax               # eax<- vC ("this" ptr)
+    testl     %eax,%eax                 # null?
     je        common_errNullObject      # yep, throw exception
-    movl      offObject_clazz(%ecx),%eax # eax<- thisPtr->clazz
+    movl      offObject_clazz(%eax),%eax # eax<- thisPtr->clazz
     movl      offClassObject_vtable(%eax),%eax # eax<- thisPtr->clazz->vtable
     EXPORT_PC                           # might throw later - get ready
-    movl      (%eax,%edx,4),%eax        # eax<- vtable[BBBB]
+    movl      (%eax,%ecx,4),%eax        # eax<- vtable[BBBB]
     jmp       common_invokeMethodRange
 
 
@@ -8151,12 +7744,10 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      offClassObject_super(%ecx),%ecx # ecx<- method->clazz->super
     testl     %eax,%eax                 # null "this"?
     je        common_errNullObject      # "this" is null, throw exception
-    movl       %eax, TMP_SPILL1(%ebp)
     movzwl    2(rPC),%eax               # eax<- BBBB
     movl      offClassObject_vtable(%ecx),%ecx # ecx<- vtable
     EXPORT_PC
     movl      (%ecx,%eax,4),%eax        # eax<- super->vtable[BBBB]
-    movl      TMP_SPILL1(%ebp), %ecx
     jmp       common_invokeMethodNoRange
 
 /* ------------------------------ */
@@ -8181,12 +7772,10 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movl      offClassObject_super(%ecx),%ecx # ecx<- method->clazz->super
     testl     %eax,%eax                 # null "this"?
     je        common_errNullObject      # "this" is null, throw exception
-    movl       %eax, TMP_SPILL1(%ebp)
     movzwl    2(rPC),%eax               # eax<- BBBB
     movl      offClassObject_vtable(%ecx),%ecx # ecx<- vtable
     EXPORT_PC
     movl      (%ecx,%eax,4),%eax        # eax<- super->vtable[BBBB]
-    movl      TMP_SPILL1(%ebp), %ecx
     jmp       common_invokeMethodRange
 
 
@@ -8265,12 +7854,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SGET_OBJECT_VOLATILE_resolve                # if not, make it so
@@ -8296,14 +7879,8 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SGET_OBJECT_VOLATILE_finish                 # success, continue
+    jne      .LOP_SGET_OBJECT_VOLATILE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
@@ -8318,12 +7895,6 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     movzwl    2(rPC),%eax                        # eax<- field ref BBBB
     movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
     movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
-#if defined(WITH_JIT)
-    movl      %ecx, TMP_SPILL1(%ebp)
-    lea       (%ecx,%eax,4),%ecx
-    movl      %ecx, TMP_SPILL2(%ebp)
-    movl      TMP_SPILL1(%ebp), %ecx
-#endif
     movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField
     testl     %eax,%eax                          # resolved entry null?
     je        .LOP_SPUT_OBJECT_VOLATILE_resolve                # if not, make it so
@@ -8355,22 +7926,3557 @@ dvmAsmInstructionStartCode = .L_OP_NOP
     call     dvmResolveStaticField              # eax<- resolved StaticField ptr
     UNSPILL(rIBASE)
     testl    %eax,%eax
-    je      common_exceptionThrown             # no, handle exception
-#if defined(WITH_JIT)
-    movl      TMP_SPILL2(%ebp), %ecx
-    SPILL(rIBASE)
-    call     common_verifyField
-    UNSPILL(rIBASE)
-#endif
-    jmp      .LOP_SPUT_OBJECT_VOLATILE_finish                 # success, continue
+    jne      .LOP_SPUT_OBJECT_VOLATILE_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
 
 
 /* ------------------------------ */
-.L_OP_UNUSED_FF: /* 0xff */
-/* File: x86/OP_UNUSED_FF.S */
+.L_OP_DISPATCH_FF: /* 0xff */
+/* File: x86/OP_DISPATCH_FF.S */
+    leal      256(rINST),%ecx
+    GOTO_NEXT_JUMBO_R %ecx
+
+/* ------------------------------ */
+.L_OP_CONST_CLASS_JUMBO: /* 0x100 */
+/* File: x86/OP_CONST_CLASS_JUMBO.S */
+    /* const-class/jumbo vBBBB, Class@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      2(rPC),%eax              # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx# ecx<- self->methodClassDex
+    movl      offDvmDex_pResClasses(%ecx),%ecx # ecx<- dvmDex->pResClasses
+    movl      (%ecx,%eax,4),%eax       # eax<- rResClasses[AAAAAAAA]
+    FETCH_INST_OPCODE 4 %ecx
+    testl     %eax,%eax                # resolved yet?
+    je        .LOP_CONST_CLASS_JUMBO_resolve
+    SET_VREG  %eax rINST               # vBBBB<- rResClasses[AAAAAAAA]
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+/* This is the less common path, so we'll redo some work
+   here rather than force spills on the common path */
+.LOP_CONST_CLASS_JUMBO_resolve:
+    movl     rSELF,%eax
+    EXPORT_PC
+    movl     offThread_method(%eax),%eax # eax<- self->method
+    movl     $1,OUT_ARG2(%esp)        # true
+    movl     2(rPC),%ecx               # ecx<- AAAAAAAA
+    movl     offMethod_clazz(%eax),%eax
+    movl     %ecx,OUT_ARG1(%esp)
+    movl     %eax,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveClass           # go resolve
+    UNSPILL(rIBASE)
+    testl    %eax,%eax                 # failed?
+    je       common_exceptionThrown
+    FETCH_INST_OPCODE 4 %ecx
+    SET_VREG %eax rINST
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_CHECK_CAST_JUMBO: /* 0x101 */
+/* File: x86/OP_CHECK_CAST_JUMBO.S */
+    /*
+     * Check to see if a cast from one class to another is allowed.
+     */
+    /* check-cast/jumbo vBBBB, class@AAAAAAAA */
+    movl      rSELF,%ecx
+    GET_VREG_R  rINST,rINST             # rINST<- vBBBB (object)
+    movl      2(rPC),%eax               # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
+    testl     rINST,rINST               # is oject null?
+    movl      offDvmDex_pResClasses(%ecx),%ecx # ecx<- pDvmDex->pResClasses
+    je        .LOP_CHECK_CAST_JUMBO_okay          # null obj, cast always succeeds
+    movl      (%ecx,%eax,4),%eax        # eax<- resolved class
+    movl      offObject_clazz(rINST),%ecx # ecx<- obj->clazz
+    testl     %eax,%eax                 # have we resolved this before?
+    je        .LOP_CHECK_CAST_JUMBO_resolve       # no, go do it now
+.LOP_CHECK_CAST_JUMBO_resolved:
+    cmpl      %eax,%ecx                 # same class (trivial success)?
+    jne       .LOP_CHECK_CAST_JUMBO_fullcheck     # no, do full check
+.LOP_CHECK_CAST_JUMBO_okay:
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Trivial test failed, need to perform full check.  This is common.
+     *  ecx holds obj->clazz
+     *  eax holds class resolved from AAAAAAAA
+     *  rINST holds object
+     */
+.LOP_CHECK_CAST_JUMBO_fullcheck:
+    movl    %eax,sReg0                 # we'll need the desired class on failure
+    movl    %eax,OUT_ARG1(%esp)
+    movl    %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call    dvmInstanceofNonTrivial    # eax<- boolean result
+    UNSPILL(rIBASE)
+    testl   %eax,%eax                  # failed?
+    jne     .LOP_CHECK_CAST_JUMBO_okay           # no, success
+
+    # A cast has failed.  We need to throw a ClassCastException.
+    EXPORT_PC
+    movl    offObject_clazz(rINST),%eax
+    movl    %eax,OUT_ARG0(%esp)                 # arg0<- obj->clazz
+    movl    sReg0,%ecx
+    movl    %ecx,OUT_ARG1(%esp)                 # arg1<- desired class
+    call    dvmThrowClassCastException
+    jmp     common_exceptionThrown
+
+    /*
+     * Resolution required.  This is the least-likely path, and we're
+     * going to have to recreate some data.
+     *
+     *  rINST holds object
+     */
+.LOP_CHECK_CAST_JUMBO_resolve:
+    movl    rSELF,%ecx
+    EXPORT_PC
+    movl    2(rPC),%eax                # eax<- AAAAAAAA
+    movl    offThread_method(%ecx),%ecx  # ecx<- self->method
+    movl    %eax,OUT_ARG1(%esp)        # arg1<- AAAAAAAA
+    movl    offMethod_clazz(%ecx),%ecx # ecx<- metho->clazz
+    movl    $0,OUT_ARG2(%esp)         # arg2<- false
+    movl    %ecx,OUT_ARG0(%esp)        # arg0<- method->clazz
+    SPILL(rIBASE)
+    call    dvmResolveClass            # eax<- resolved ClassObject ptr
+    UNSPILL(rIBASE)
+    testl   %eax,%eax                  # got null?
+    je      common_exceptionThrown     # yes, handle exception
+    movl    offObject_clazz(rINST),%ecx  # ecx<- obj->clazz
+    jmp     .LOP_CHECK_CAST_JUMBO_resolved       # pick up where we left off
+
+/* ------------------------------ */
+.L_OP_INSTANCE_OF_JUMBO: /* 0x102 */
+/* File: x86/OP_INSTANCE_OF_JUMBO.S */
+    /*
+     * Check to see if an object reference is an instance of a class.
+     *
+     * Most common situation is a non-null object, being compared against
+     * an already-resolved class.
+     */
+    /* instance-of/jumbo vBBBB, vCCCC, class@AAAAAAAA */
+    movzwl  8(rPC),%eax                 # eax<- CCCC
+    GET_VREG_R %eax %eax                # eax<- vCCCC (obj)
+    movl    rSELF,%ecx
+    testl   %eax,%eax                   # object null?
+    movl    offThread_methodClassDex(%ecx),%ecx  # ecx<- pDvmDex
+    SPILL(rIBASE)                       # preserve rIBASE
+    je      .LOP_INSTANCE_OF_JUMBO_store           # null obj, not instance, store it
+    movl    2(rPC),rIBASE               # edx<- AAAAAAAA
+    movl    offDvmDex_pResClasses(%ecx),%ecx # ecx<- pDvmDex->pResClasses
+    movl    (%ecx,rIBASE,4),%ecx        # ecx<- resolved class
+    movl    offObject_clazz(%eax),%eax  # eax<- obj->clazz
+    testl   %ecx,%ecx                   # have we resolved this before?
+    je      .LOP_INSTANCE_OF_JUMBO_resolve         # not resolved, do it now
+.LOP_INSTANCE_OF_JUMBO_resolved:  # eax<- obj->clazz, ecx<- resolved class
+    cmpl    %eax,%ecx                   # same class (trivial success)?
+    je      .LOP_INSTANCE_OF_JUMBO_trivial         # yes, trivial finish
+    /*
+     * Trivial test failed, need to perform full check.  This is common.
+     *  eax holds obj->clazz
+     *  ecx holds class resolved from BBBB
+     *  rINST has BA
+     */
+    movl    %eax,OUT_ARG0(%esp)
+    movl    %ecx,OUT_ARG1(%esp)
+    call    dvmInstanceofNonTrivial     # eax<- boolean result
+    # fall through to OP_INSTANCE_OF_JUMBO_store
+
+    /*
+     * eax holds boolean result
+     * rINST holds BBBB
+     */
+.LOP_INSTANCE_OF_JUMBO_store:
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    SET_VREG %eax rINST                 # vBBBB<- eax
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Trivial test succeeded, save and bail.
+     *  r9 holds BBBB
+     */
+.LOP_INSTANCE_OF_JUMBO_trivial:
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    movl    $1,%eax
+    SET_VREG %eax rINST                 # vBBBB<- true
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Resolution required.  This is the least-likely path.
+     *
+     *  edx holds AAAAAAAA
+     */
+.LOP_INSTANCE_OF_JUMBO_resolve:
+    movl    rIBASE,OUT_ARG1(%esp)       # arg1<- AAAAAAAA
+    movl    rSELF,%ecx
+    movl    offThread_method(%ecx),%ecx
+    movl    $1,OUT_ARG2(%esp)          # arg2<- true
+    movl    offMethod_clazz(%ecx),%ecx  # ecx<- method->clazz
+    EXPORT_PC
+    movl    %ecx,OUT_ARG0(%esp)         # arg0<- method->clazz
+    call    dvmResolveClass             # eax<- resolved ClassObject ptr
+    testl   %eax,%eax                   # success?
+    je      common_exceptionThrown      # no, handle exception
+/* Now, we need to sync up with fast path.  We need eax to
+ * hold the obj->clazz, and ecx to hold the resolved class
+ */
+    movl    %eax,%ecx                   # ecx<- resolved class
+    movzwl  8(rPC),%eax                 # eax<- CCCC
+    GET_VREG_R %eax %eax                # eax<- vCCCC (obj)
+    movl    offObject_clazz(%eax),%eax  # eax<- obj->clazz
+    jmp     .LOP_INSTANCE_OF_JUMBO_resolved
+
+/* ------------------------------ */
+.L_OP_NEW_INSTANCE_JUMBO: /* 0x103 */
+/* File: x86/OP_NEW_INSTANCE_JUMBO.S */
+    /*
+     * Create a new instance of a class.
+     */
+    /* new-instance/jumbo vBBBB, class@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      2(rPC),%eax               # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- pDvmDex
+    movl      offDvmDex_pResClasses(%ecx),%ecx # ecx<- pDvmDex->pResClasses
+    EXPORT_PC
+    movl      (%ecx,%eax,4),%ecx        # ecx<- resolved class
+    SPILL(rIBASE)
+    testl     %ecx,%ecx                 # resolved?
+    je        .LOP_NEW_INSTANCE_JUMBO_resolve       # no, go do it
+.LOP_NEW_INSTANCE_JUMBO_resolved:  # on entry, ecx<- class
+    cmpb      $CLASS_INITIALIZED,offClassObject_status(%ecx)
+    jne       .LOP_NEW_INSTANCE_JUMBO_needinit
+.LOP_NEW_INSTANCE_JUMBO_initialized:  # on entry, ecx<- class
+    movl      $ALLOC_DONT_TRACK,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    call     dvmAllocObject             # eax<- new object
+    UNSPILL(rIBASE)
+    FETCH_INST_OPCODE 4 %ecx
+    testl    %eax,%eax                  # success?
+    je       common_exceptionThrown     # no, bail out
+    SET_VREG %eax rINST
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Class initialization required.
+     *
+     *  ecx holds class object
+     */
+.LOP_NEW_INSTANCE_JUMBO_needinit:
+    SPILL_TMP1(%ecx)                    # save object
+    movl    %ecx,OUT_ARG0(%esp)
+    call    dvmInitClass                # initialize class
+    UNSPILL_TMP1(%ecx)                  # restore object
+    testl   %eax,%eax                   # success?
+    jne     .LOP_NEW_INSTANCE_JUMBO_initialized     # success, continue
+    jmp     common_exceptionThrown      # go deal with init exception
+
+    /*
+     * Resolution required.  This is the least-likely path.
+     *
+     */
+.LOP_NEW_INSTANCE_JUMBO_resolve:
+    movl    rSELF,%ecx
+    movl    2(rPC),%eax                 # eax<- AAAAAAAA
+    movl    offThread_method(%ecx),%ecx   # ecx<- self->method
+    movl    %eax,OUT_ARG1(%esp)
+    movl    offMethod_clazz(%ecx),%ecx  # ecx<- method->clazz
+    movl    $0,OUT_ARG2(%esp)
+    movl    %ecx,OUT_ARG0(%esp)
+    call    dvmResolveClass             # call(clazz,off,flags)
+    movl    %eax,%ecx                   # ecx<- resolved ClassObject ptr
+    testl   %ecx,%ecx                   # success?
+    jne     .LOP_NEW_INSTANCE_JUMBO_resolved        # good to go
+    jmp     common_exceptionThrown      # no, handle exception
+
+/* ------------------------------ */
+.L_OP_NEW_ARRAY_JUMBO: /* 0x104 */
+/* File: x86/OP_NEW_ARRAY_JUMBO.S */
+    /*
+     * Allocate an array of objects, specified with the array class
+     * and a count.
+     *
+     * The verifier guarantees that this is an array class, so we don't
+     * check for it here.
+     */
+    /* new-array/jumbo vBBBB, vCCCC, class@AAAAAAAA */
+    movl    rSELF,%ecx
+    EXPORT_PC
+    movl    offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
+    movl    2(rPC),%eax                       # eax<- AAAAAAAA
+    movl    offDvmDex_pResClasses(%ecx),%ecx  # ecx<- pDvmDex->pResClasses
+    SPILL(rIBASE)
+    movl    (%ecx,%eax,4),%ecx                # ecx<- resolved class
+    movzwl  8(rPC),%eax                       # eax<- CCCC
+    GET_VREG_R %eax %eax                      # eax<- vCCCC (array length)
+    testl   %eax,%eax
+    js      common_errNegativeArraySize       # bail, passing len in eax
+    testl   %ecx,%ecx                         # already resolved?
+    jne     .LOP_NEW_ARRAY_JUMBO_finish                # yes, fast path
+    /*
+     * Resolve class.  (This is an uncommon case.)
+     *  ecx holds class (null here)
+     *  eax holds array length (vCCCC)
+     */
+    movl    rSELF,%ecx
+    SPILL_TMP1(%eax)                   # save array length
+    movl    offThread_method(%ecx),%ecx  # ecx<- self->method
+    movl    2(rPC),%eax                # eax<- AAAAAAAA
+    movl    offMethod_clazz(%ecx),%ecx # ecx<- method->clazz
+    movl    %eax,OUT_ARG1(%esp)
+    movl    $0,OUT_ARG2(%esp)
+    movl    %ecx,OUT_ARG0(%esp)
+    call    dvmResolveClass            # eax<- call(clazz,ref,flag)
+    movl    %eax,%ecx
+    UNSPILL_TMP1(%eax)
+    testl   %ecx,%ecx                  # successful resolution?
+    je      common_exceptionThrown     # no, bail.
+# fall through to OP_NEW_ARRAY_JUMBO_finish
+
+    /*
+     * Finish allocation
+     *
+     * ecx holds class
+     * eax holds array length (vCCCC)
+     */
+.LOP_NEW_ARRAY_JUMBO_finish:
+    movl    %ecx,OUT_ARG0(%esp)
+    movl    %eax,OUT_ARG1(%esp)
+    movl    $ALLOC_DONT_TRACK,OUT_ARG2(%esp)
+    call    dvmAllocArrayByClass    # eax<- call(clazz,length,flags)
+    UNSPILL(rIBASE)
+    FETCH_INST_OPCODE 5 %ecx
+    testl   %eax,%eax               # failed?
+    je      common_exceptionThrown  # yup - go handle
+    SET_VREG %eax rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_FILLED_NEW_ARRAY_JUMBO: /* 0x105 */
+/* File: x86/OP_FILLED_NEW_ARRAY_JUMBO.S */
+    /*
+     * Create a new array with elements filled from registers.
+     */
+    /* filled-new-array/jumbo {vCCCC..v(CCCC+BBBB-1)}, type@AAAAAAAA */
+    movl    rSELF,%eax
+    movl    offThread_methodClassDex(%eax),%eax # eax<- pDvmDex
+    movl    2(rPC),%ecx                       # ecx<- AAAAAAAA
+    movl    offDvmDex_pResClasses(%eax),%eax  # eax<- pDvmDex->pResClasses
+    movl    (%eax,%ecx,4),%eax                # eax<- resolved class
+    EXPORT_PC
+    testl   %eax,%eax                         # already resolved?
+    jne     .LOP_FILLED_NEW_ARRAY_JUMBO_continue              # yes, continue
+    # less frequent path, so we'll redo some work
+    movl    rSELF,%eax
+    movl    $0,OUT_ARG2(%esp)                # arg2<- false
+    movl    %ecx,OUT_ARG1(%esp)               # arg1<- AAAAAAAA
+    movl    offThread_method(%eax),%eax         # eax<- self->method
+    movl    offMethod_clazz(%eax),%eax        # eax<- method->clazz
+    movl    %eax,OUT_ARG0(%esp)               # arg0<- clazz
+    SPILL(rIBASE)
+    call    dvmResolveClass                   # eax<- call(clazz,ref,flag)
+    UNSPILL(rIBASE)
+    testl   %eax,%eax                         # null?
+    je      common_exceptionThrown            # yes, handle it
+
+       # note: fall through to .LOP_FILLED_NEW_ARRAY_JUMBO_continue
+
+    /*
+     * On entry:
+     *    eax holds array class [r0]
+     *    ecx is scratch
+     */
+.LOP_FILLED_NEW_ARRAY_JUMBO_continue:
+    movl    offClassObject_descriptor(%eax),%ecx  # ecx<- arrayClass->descriptor
+    movl    $ALLOC_DONT_TRACK,OUT_ARG2(%esp)     # arg2<- flags
+    movzbl  1(%ecx),%ecx                          # ecx<- descriptor[1]
+    movl    %eax,OUT_ARG0(%esp)                   # arg0<- arrayClass
+    movl    rSELF,%eax
+    cmpb    $'I',%cl                             # supported?
+    je      1f
+    cmpb    $'L',%cl
+    je      1f
+    cmpb    $'[',%cl
+    jne      .LOP_FILLED_NEW_ARRAY_JUMBO_notimpl                  # no, not handled yet
+1:
+    movl    %ecx,offThread_retval+4(%eax)           # save type
+    movl    rINST,OUT_ARG1(%esp)                  # arg1<- BBBB (length)
+    SPILL(rIBASE)
+    call    dvmAllocArrayByClass     # eax<- call(arrayClass, length, flags)
+    UNSPILL(rIBASE)
+    movl    rSELF,%ecx
+    testl   %eax,%eax                             # alloc successful?
+    je      common_exceptionThrown                # no, handle exception
+    movl    %eax,offThread_retval(%ecx)             # retval.l<- new array
+    movzwl  8(rPC),%ecx                           # ecx<- CCCC
+    leal    offArrayObject_contents(%eax),%eax    # eax<- newArray->contents
+
+/* at this point:
+ *     eax is pointer to tgt
+ *     rINST is length
+ *     ecx is CCCC
+ *  We now need to copy values from registers into the array
+ */
+
+    # set up src pointer
+    SPILL_TMP2(%esi)
+    SPILL_TMP3(%edi)
+    leal    (rFP,%ecx,4),%esi # set up src ptr
+    movl    %eax,%edi         # set up dst ptr
+    movl    rINST,%ecx        # load count register
+    rep
+    movsd
+    UNSPILL_TMP2(%esi)
+    UNSPILL_TMP3(%edi)
+    movl    rSELF,%ecx
+    movl    offThread_retval+4(%ecx),%eax      # eax<- type
+
+    cmpb    $'I',%al                        # Int array?
+    je      5f                               # skip card mark if so
+    movl    offThread_retval(%ecx),%eax        # eax<- object head
+    movl    offThread_cardTable(%ecx),%ecx     # card table base
+    shrl    $GC_CARD_SHIFT,%eax             # convert to card num
+    movb    %cl,(%ecx,%eax)                  # mark card based on object head
+5:
+    FETCH_INST_OPCODE 5 %ecx
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+
+    /*
+     * Throw an exception indicating that we have not implemented this
+     * mode of filled-new-array.
+     */
+.LOP_FILLED_NEW_ARRAY_JUMBO_notimpl:
+    movl    $.LstrFilledNewArrayNotImplA,%eax
+    movl    %eax,OUT_ARG0(%esp)
+    call    dvmThrowInternalError
+    jmp     common_exceptionThrown
+
+/* ------------------------------ */
+.L_OP_IGET_JUMBO: /* 0x106 */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+/* ------------------------------ */
+.L_OP_IGET_WIDE_JUMBO: /* 0x107 */
+/* File: x86/OP_IGET_WIDE_JUMBO.S */
+    /*
+     * Jumbo 64-bit instance field get.
+     */
+    /* iget-wide/jumbo vBBBB, vCCCC, field@AAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_WIDE_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # for dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save objpointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IGET_WIDE_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_WIDE_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    leal    (%ecx,%eax,1),%eax                  # eax<- address of field
+    movl    (%eax),%ecx                         # ecx<- lsw
+    movl    4(%eax),%eax                        # eax<- msw
+    SET_VREG_WORD %ecx rINST 0
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG_WORD %eax rINST 1
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_IGET_OBJECT_JUMBO: /* 0x108 */
+/* File: x86/OP_IGET_OBJECT_JUMBO.S */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_OBJECT_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_OBJECT_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_OBJECT_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+
+/* ------------------------------ */
+.L_OP_IGET_BOOLEAN_JUMBO: /* 0x109 */
+/* File: x86/OP_IGET_BOOLEAN_JUMBO.S */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_BOOLEAN_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_BOOLEAN_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_BOOLEAN_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movzbl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+
+/* ------------------------------ */
+.L_OP_IGET_BYTE_JUMBO: /* 0x10a */
+/* File: x86/OP_IGET_BYTE_JUMBO.S */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_BYTE_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_BYTE_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_BYTE_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movsbl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+
+/* ------------------------------ */
+.L_OP_IGET_CHAR_JUMBO: /* 0x10b */
+/* File: x86/OP_IGET_CHAR_JUMBO.S */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_CHAR_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_CHAR_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_CHAR_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movzwl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+
+/* ------------------------------ */
+.L_OP_IGET_SHORT_JUMBO: /* 0x10c */
+/* File: x86/OP_IGET_SHORT_JUMBO.S */
+/* File: x86/OP_IGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field get.
+     *
+     * for: iget/jumbo, iget-object/jumbo, iget-boolean/jumbo, iget-byte/jumbo,
+     *      iget-char/jumbo, iget-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)                               # preserve rIBASE
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IGET_SHORT_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)               # needed by dvmResolveInstField
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  returns InstrField ptr
+    jne     .LOP_IGET_SHORT_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IGET_SHORT_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movswl   (%ecx,%eax,1),%ecx                  # ecx<- obj.field (8/16/32 bits)
+    FETCH_INST_OPCODE 5 %eax
+    UNSPILL(rIBASE)                             # restore rIBASE
+    SET_VREG %ecx rINST
+    ADVANCE_PC 5
+    GOTO_NEXT_R %eax
+
+
+/* ------------------------------ */
+.L_OP_IPUT_JUMBO: /* 0x10d */
+/* File: x86/OP_IPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field put.
+     *
+     * for: iput/jumbo, iput-object/jumbo, iput-boolean/jumbo, iput-byte/jumbo,
+            iput-char/jumbo, iput-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                       # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax   # eax<- byte offset of field
+    testl   %ecx,%ecx                            # object null?
+    je      common_errNullObject                 # object was null
+    movl   rINST,(%ecx,%eax,1)            # obj.field <- v[BBBB](8/16/32 bits)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_IPUT_WIDE_JUMBO: /* 0x10e */
+/* File: x86/OP_IPUT_WIDE_JUMBO.S */
+    /*
+     * Jumbo 64-bit instance field put.
+     */
+    /* iput-wide/jumbo vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_WIDE_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           #  ... which returns InstrField ptr
+    jne     .LOP_IPUT_WIDE_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_WIDE_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rIBASE is scratch, but needs to be unspilled
+     *   rINST holds BBBB
+     */
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    leal    (%ecx,%eax,1),%eax                  # eax<- address of field
+    GET_VREG_WORD %ecx rINST 0                  # ecx<- lsw
+    GET_VREG_WORD rINST rINST 1                 # rINST<- msw
+    movl    rINST,4(%eax)
+    movl    %ecx,(%eax)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_IPUT_OBJECT_JUMBO: /* 0x10f */
+/* File: x86/OP_IPUT_OBJECT_JUMBO.S */
+    /*
+     * Jumbo object field put.
+     */
+    /* iput-object/jumbo vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                  # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_OBJECT_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_OBJECT_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_OBJECT_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rIBASE is scratch, but needs to be unspilled
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                      # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax  # eax<- byte offset of field
+    testl   %ecx,%ecx                           # object null?
+    je      common_errNullObject                # object was null
+    movl    rINST,(%ecx,%eax)      # obj.field <- v[BBBB](8/16/32 bits)
+    movl    rSELF,%eax
+    testl   rINST,rINST                         # stored a NULL?
+    movl    offThread_cardTable(%eax),%eax      # get card table base
+    je      1f                                  # skip card mark if null store
+    shrl    $GC_CARD_SHIFT,%ecx                # object head to card number
+    movb    %al,(%eax,%ecx)                     # mark card using object head
+1:
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+/* ------------------------------ */
+.L_OP_IPUT_BOOLEAN_JUMBO: /* 0x110 */
+/* File: x86/OP_IPUT_BOOLEAN_JUMBO.S */
+/* File: x86/OP_IPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field put.
+     *
+     * for: iput/jumbo, iput-object/jumbo, iput-boolean/jumbo, iput-byte/jumbo,
+            iput-char/jumbo, iput-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_BOOLEAN_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_BOOLEAN_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_BOOLEAN_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                       # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax   # eax<- byte offset of field
+    testl   %ecx,%ecx                            # object null?
+    je      common_errNullObject                 # object was null
+    movb   rINSTbl,(%ecx,%eax,1)            # obj.field <- v[BBBB](8/16/32 bits)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+
+/* ------------------------------ */
+.L_OP_IPUT_BYTE_JUMBO: /* 0x111 */
+/* File: x86/OP_IPUT_BYTE_JUMBO.S */
+/* File: x86/OP_IPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field put.
+     *
+     * for: iput/jumbo, iput-object/jumbo, iput-boolean/jumbo, iput-byte/jumbo,
+            iput-char/jumbo, iput-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_BYTE_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_BYTE_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_BYTE_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                       # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax   # eax<- byte offset of field
+    testl   %ecx,%ecx                            # object null?
+    je      common_errNullObject                 # object was null
+    movb   rINSTbl,(%ecx,%eax,1)            # obj.field <- v[BBBB](8/16/32 bits)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+
+/* ------------------------------ */
+.L_OP_IPUT_CHAR_JUMBO: /* 0x112 */
+/* File: x86/OP_IPUT_CHAR_JUMBO.S */
+/* File: x86/OP_IPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field put.
+     *
+     * for: iput/jumbo, iput-object/jumbo, iput-boolean/jumbo, iput-byte/jumbo,
+            iput-char/jumbo, iput-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_CHAR_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_CHAR_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_CHAR_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                       # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax   # eax<- byte offset of field
+    testl   %ecx,%ecx                            # object null?
+    je      common_errNullObject                 # object was null
+    movw   rINSTw,(%ecx,%eax,1)            # obj.field <- v[BBBB](8/16/32 bits)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+
+/* ------------------------------ */
+.L_OP_IPUT_SHORT_JUMBO: /* 0x113 */
+/* File: x86/OP_IPUT_SHORT_JUMBO.S */
+/* File: x86/OP_IPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit instance field put.
+     *
+     * for: iput/jumbo, iput-object/jumbo, iput-boolean/jumbo, iput-byte/jumbo,
+            iput-char/jumbo, iput-short/jumbo
+     */
+    /* exop vBBBB, vCCCC, field@AAAAAAAA */
+    movl    rSELF,%ecx
+    SPILL(rIBASE)
+    movl    2(rPC),rIBASE                       # rIBASE<- AAAAAAAA
+    movl    offThread_methodClassDex(%ecx),%eax # eax<- DvmDex
+    movzwl  8(rPC),%ecx                         # ecx<- CCCC
+    movl    offDvmDex_pResFields(%eax),%eax     # eax<- pDvmDex->pResFields
+    GET_VREG_R %ecx %ecx                        # ecx<- fp[CCCC], the object ptr
+    movl    (%eax,rIBASE,4),%eax                # resolved entry
+    testl   %eax,%eax                           # is resolved entry null?
+    jne     .LOP_IPUT_SHORT_JUMBO_finish                  # no, already resolved
+    movl    rIBASE,OUT_ARG1(%esp)
+    movl    rSELF,rIBASE
+    EXPORT_PC
+    movl    offThread_method(rIBASE),rIBASE     # rIBASE<- current method
+    movl    offMethod_clazz(rIBASE),rIBASE      # rIBASE<- method->clazz
+    SPILL_TMP1(%ecx)                            # save obj pointer across call
+    movl    rIBASE,OUT_ARG0(%esp)               # pass in method->clazz
+    call    dvmResolveInstField                 #  ... to dvmResolveInstField
+    UNSPILL_TMP1(%ecx)
+    testl   %eax,%eax                           # returns InstrField ptr
+    jne     .LOP_IPUT_SHORT_JUMBO_finish
+    jmp     common_exceptionThrown
+
+.LOP_IPUT_SHORT_JUMBO_finish:
+    /*
+     * Currently:
+     *   eax holds resolved field
+     *   ecx holds object
+     *   rINST holds BBBB
+     */
+    GET_VREG_R rINST rINST                       # rINST<- v[BBBB]
+    movl    offInstField_byteOffset(%eax),%eax   # eax<- byte offset of field
+    testl   %ecx,%ecx                            # object null?
+    je      common_errNullObject                 # object was null
+    movw   rINSTw,(%ecx,%eax,1)            # obj.field <- v[BBBB](8/16/32 bits)
+    FETCH_INST_OPCODE 5 %ecx
+    UNSPILL(rIBASE)
+    ADVANCE_PC 5
+    GOTO_NEXT_R %ecx
+
+
+/* ------------------------------ */
+.L_OP_SGET_JUMBO: /* 0x114 */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_JUMBO_resolve                # if not, make it so
+.LOP_SGET_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+/* ------------------------------ */
+.L_OP_SGET_WIDE_JUMBO: /* 0x115 */
+/* File: x86/OP_SGET_WIDE_JUMBO.S */
+    /*
+     * Jumbo 64-bit SGET handler.
+     *
+     */
+    /* sget-wide/jumbo vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_WIDE_JUMBO_resolve                # if not, make it so
+.LOP_SGET_WIDE_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%ecx    # ecx<- lsw
+    movl      4+offStaticField_value(%eax),%eax  # eax<- msw
+    SET_VREG_WORD %ecx rINST 0
+    FETCH_INST_OPCODE 2 %ecx
+    SET_VREG_WORD %eax rINST 1
+    ADVANCE_PC 2
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_WIDE_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_WIDE_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+/* ------------------------------ */
+.L_OP_SGET_OBJECT_JUMBO: /* 0x116 */
+/* File: x86/OP_SGET_OBJECT_JUMBO.S */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_OBJECT_JUMBO_resolve                # if not, make it so
+.LOP_SGET_OBJECT_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_OBJECT_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_OBJECT_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SGET_BOOLEAN_JUMBO: /* 0x117 */
+/* File: x86/OP_SGET_BOOLEAN_JUMBO.S */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_BOOLEAN_JUMBO_resolve                # if not, make it so
+.LOP_SGET_BOOLEAN_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_BOOLEAN_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_BOOLEAN_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SGET_BYTE_JUMBO: /* 0x118 */
+/* File: x86/OP_SGET_BYTE_JUMBO.S */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_BYTE_JUMBO_resolve                # if not, make it so
+.LOP_SGET_BYTE_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_BYTE_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_BYTE_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SGET_CHAR_JUMBO: /* 0x119 */
+/* File: x86/OP_SGET_CHAR_JUMBO.S */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_CHAR_JUMBO_resolve                # if not, make it so
+.LOP_SGET_CHAR_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_CHAR_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_CHAR_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SGET_SHORT_JUMBO: /* 0x11a */
+/* File: x86/OP_SGET_SHORT_JUMBO.S */
+/* File: x86/OP_SGET_JUMBO.S */
+    /*
+     * Jumbo 32-bit SGET handler.
+     *
+     * for: sget/jumbo, sget-object/jumbo, sget-boolean/jumbo, sget-byte/jumbo,
+     *      sget-char/jumbo, sget-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SGET_SHORT_JUMBO_resolve                # if not, make it so
+.LOP_SGET_SHORT_JUMBO_finish:     # field ptr in eax
+    movl      offStaticField_value(%eax),%eax
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    SET_VREG %eax rINST
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SGET_SHORT_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SGET_SHORT_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SPUT_JUMBO: /* 0x11b */
+/* File: x86/OP_SPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit SPUT handler.
+     *
+     * for: sput/jumbo, sput-boolean/jumbo, sput-byte/jumbo, sput-char/jumbo,
+     *      sput-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_JUMBO_finish:     # field ptr in eax
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    movl      rINST,offStaticField_value(%eax)
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+/* ------------------------------ */
+.L_OP_SPUT_WIDE_JUMBO: /* 0x11c */
+/* File: x86/OP_SPUT_WIDE_JUMBO.S */
+    /*
+     * Jumbo 64-bit SPUT handler.
+     */
+    /* sput-wide/jumbo vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_WIDE_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_WIDE_JUMBO_finish:     # field ptr in eax
+    GET_VREG_WORD %ecx rINST 0                  # ecx<- lsw
+    GET_VREG_WORD rINST rINST 1                 # rINST<- msw
+    movl      %ecx,offStaticField_value(%eax)
+    FETCH_INST_OPCODE 4 %ecx
+    movl      rINST,4+offStaticField_value(%eax)
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_WIDE_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_WIDE_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+/* ------------------------------ */
+.L_OP_SPUT_OBJECT_JUMBO: /* 0x11d */
+/* File: x86/OP_SPUT_OBJECT_JUMBO.S */
+    /*
+     * Jumbo SPUT object handler.
+     */
+    /* sput-object/jumbo vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_OBJECT_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_OBJECT_JUMBO_finish:                              # field ptr in eax
+    GET_VREG_R  %ecx rINST
+    movl      %ecx,offStaticField_value(%eax)    # do the store
+    testl     %ecx,%ecx                          # stored null object ptr?
+    je        1f                                 # skip card mark if null
+    movl      rSELF,%ecx
+    movl      offField_clazz(%eax),%eax          # eax<- method->clazz
+    movl      offThread_cardTable(%ecx),%ecx       # get card table base
+    shrl      $GC_CARD_SHIFT,%eax               # head to card number
+    movb      %cl,(%ecx,%eax)                    # mark card
+1:
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    GOTO_NEXT_R %ecx
+
+.LOP_SPUT_OBJECT_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_OBJECT_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+/* ------------------------------ */
+.L_OP_SPUT_BOOLEAN_JUMBO: /* 0x11e */
+/* File: x86/OP_SPUT_BOOLEAN_JUMBO.S */
+/* File: x86/OP_SPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit SPUT handler.
+     *
+     * for: sput/jumbo, sput-boolean/jumbo, sput-byte/jumbo, sput-char/jumbo,
+     *      sput-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_BOOLEAN_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_BOOLEAN_JUMBO_finish:     # field ptr in eax
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    movl      rINST,offStaticField_value(%eax)
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_BOOLEAN_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_BOOLEAN_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SPUT_BYTE_JUMBO: /* 0x11f */
+/* File: x86/OP_SPUT_BYTE_JUMBO.S */
+/* File: x86/OP_SPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit SPUT handler.
+     *
+     * for: sput/jumbo, sput-boolean/jumbo, sput-byte/jumbo, sput-char/jumbo,
+     *      sput-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_BYTE_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_BYTE_JUMBO_finish:     # field ptr in eax
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    movl      rINST,offStaticField_value(%eax)
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_BYTE_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_BYTE_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SPUT_CHAR_JUMBO: /* 0x120 */
+/* File: x86/OP_SPUT_CHAR_JUMBO.S */
+/* File: x86/OP_SPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit SPUT handler.
+     *
+     * for: sput/jumbo, sput-boolean/jumbo, sput-byte/jumbo, sput-char/jumbo,
+     *      sput-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_CHAR_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_CHAR_JUMBO_finish:     # field ptr in eax
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    movl      rINST,offStaticField_value(%eax)
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_CHAR_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_CHAR_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_SPUT_SHORT_JUMBO: /* 0x121 */
+/* File: x86/OP_SPUT_SHORT_JUMBO.S */
+/* File: x86/OP_SPUT_JUMBO.S */
+    /*
+     * Jumbo 32-bit SPUT handler.
+     *
+     * for: sput/jumbo, sput-boolean/jumbo, sput-byte/jumbo, sput-char/jumbo,
+     *      sput-short/jumbo
+     */
+    /* exop vBBBB, field@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      offThread_methodClassDex(%ecx),%ecx  # ecx<- DvmDex
+    movl      2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl      offDvmDex_pResFields(%ecx),%ecx    # ecx<- dvmDex->pResFields
+    movl      (%ecx,%eax,4),%eax                 # eax<- resolved StaticField ptr
+    testl     %eax,%eax                          # resolved entry null?
+    je        .LOP_SPUT_SHORT_JUMBO_resolve                # if not, make it so
+.LOP_SPUT_SHORT_JUMBO_finish:     # field ptr in eax
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 4 %ecx
+    ADVANCE_PC 4
+    movl      rINST,offStaticField_value(%eax)
+    GOTO_NEXT_R %ecx
+
+    /*
+     * Go resolve the field
+     */
+.LOP_SPUT_SHORT_JUMBO_resolve:
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                        # eax<- field ref AAAAAAAA
+    movl     offThread_method(%ecx),%ecx          # ecx<- current method
+    EXPORT_PC                                   # could throw, need to export
+    movl     offMethod_clazz(%ecx),%ecx         # ecx<- method->clazz
+    movl     %eax,OUT_ARG1(%esp)
+    movl     %ecx,OUT_ARG0(%esp)
+    SPILL(rIBASE)
+    call     dvmResolveStaticField              # eax<- resolved StaticField ptr
+    UNSPILL(rIBASE)
+    testl    %eax,%eax
+    jne      .LOP_SPUT_SHORT_JUMBO_finish                 # success, continue
+    jmp      common_exceptionThrown             # no, handle exception
+
+
+/* ------------------------------ */
+.L_OP_INVOKE_VIRTUAL_JUMBO: /* 0x122 */
+/* File: x86/OP_INVOKE_VIRTUAL_JUMBO.S */
+    /*
+     * Handle a jumbo virtual method call.
+     */
+    /* invoke-virtual/jumbo vBBBB, {vCCCC..v(CCCC+BBBB-1)}, meth@AAAAAAAA */
+    movl      rSELF,%eax
+    movl      2(rPC),%ecx                 # ecx<- AAAAAAAA
+    movl      offThread_methodClassDex(%eax),%eax  # eax<- pDvmDex
+    EXPORT_PC
+    movl      offDvmDex_pResMethods(%eax),%eax   # eax<- pDvmDex->pResMethods
+    movl      (%eax,%ecx,4),%eax          # eax<- resolved baseMethod
+    testl     %eax,%eax                   # already resolved?
+    jne       .LOP_INVOKE_VIRTUAL_JUMBO_continue        # yes, continue
+    movl      rSELF,%eax
+    movl      %ecx,OUT_ARG1(%esp)         # arg1<- ref
+    movl      offThread_method(%eax),%eax   # eax<- self->method
+    movl      offMethod_clazz(%eax),%eax  # ecx<- method->clazz
+    movl      %eax,OUT_ARG0(%esp)         # arg0<- clazz
+    movl      $METHOD_VIRTUAL,OUT_ARG2(%esp) # arg2<- flags
+    call      dvmResolveMethod            # eax<- call(clazz, ref, flags)
+    testl     %eax,%eax                   # got null?
+    jne       .LOP_INVOKE_VIRTUAL_JUMBO_continue        # no, continue
+    jmp       common_exceptionThrown      # yes, handle exception
+
+    /* At this point:
+     *   eax = resolved base method
+     *   ecx = scratch
+     */
+.LOP_INVOKE_VIRTUAL_JUMBO_continue:
+    movzwl    8(rPC),%ecx               # ecx<- CCCC
+    GET_VREG_R  %ecx %ecx               # ecx<- "this"
+    movzwl    offMethod_methodIndex(%eax),%eax  # eax<- baseMethod->methodIndex
+    testl     %ecx,%ecx                 # null this?
+    je        common_errNullObject      # go if so
+    movl      offObject_clazz(%ecx),%ecx  # ecx<- thisPtr->clazz
+    movl      offClassObject_vtable(%ecx),%ecx # ecx<- thisPtr->clazz->vtable
+    movl      (%ecx,%eax,4),%eax        # eax<- vtable[methodIndex]
+    jmp       common_invokeMethodJumbo
+
+/* ------------------------------ */
+.L_OP_INVOKE_SUPER_JUMBO: /* 0x123 */
+/* File: x86/OP_INVOKE_SUPER_JUMBO.S */
+    /*
+     * Handle a jumbo "super" method call.
+     */
+    /* invoke-super/jumbo {vCCCC..v(CCCC+BBBB-1)}, meth@AAAAAAAA */
+    movl      rSELF,rINST
+    movl      2(rPC),%eax               # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(rINST),%ecx # ecx<- pDvmDex
+    EXPORT_PC
+    movl      offDvmDex_pResMethods(%ecx),%ecx # ecx<- pDvmDex->pResMethods
+    movl      (%ecx,%eax,4),%ecx        # ecx<- resolved baseMethod
+    movl      offThread_method(rINST),%eax # eax<- method
+    movzwl    8(rPC),rINST              # rINST<- CCCC
+    GET_VREG_R  rINST rINST             # rINST<- "this" ptr
+    testl     rINST,rINST               # null "this"?
+    je        common_errNullObject      # yes, throw
+    movl      offMethod_clazz(%eax),%eax # eax<- method->clazz
+    testl     %ecx,%ecx                 # already resolved?
+    je       .LOP_INVOKE_SUPER_JUMBO_resolve
+    /*
+     * At this point:
+     *  ecx = resolved base method [r0]
+     *  eax = method->clazz [r9]
+     */
+.LOP_INVOKE_SUPER_JUMBO_continue:
+    movl    offClassObject_super(%eax),%eax   # eax<- method->clazz->super
+    movzwl  offMethod_methodIndex(%ecx),%ecx  # ecx<- baseMthod->methodIndex
+    cmpl    offClassObject_vtableCount(%eax),%ecx # compare(methodIndex,vtableCount)
+    jae     .LOP_INVOKE_SUPER_JUMBO_nsm           # method not present in superclass
+    movl    offClassObject_vtable(%eax),%eax   # eax<- ...clazz->super->vtable
+    movl    (%eax,%ecx,4),%eax        # eax<- vtable[methodIndex]
+    jmp     common_invokeMethodJumbo
+
+
+    /* At this point:
+     * ecx = null (needs to be resolved base method)
+     * eax = method->clazz
+    */
+.LOP_INVOKE_SUPER_JUMBO_resolve:
+    SPILL_TMP1(%eax)                    # method->clazz
+    movl    %eax,OUT_ARG0(%esp)         # arg0<- method->clazz
+    movl    2(rPC),%ecx                 # ecx<- AAAAAAAA
+    movl    $METHOD_VIRTUAL,OUT_ARG2(%esp)  # arg2<- resolver method type
+    movl    %ecx,OUT_ARG1(%esp)         # arg1<- ref
+    call    dvmResolveMethod            # eax<- call(clazz, ref, flags)
+    testl   %eax,%eax                   # got null?
+    movl    %eax,%ecx                   # ecx<- resolved base method
+    UNSPILL_TMP1(%eax)                  # restore method->clazz
+    jne     .LOP_INVOKE_SUPER_JUMBO_continue        # good to go - continue
+    jmp     common_exceptionThrown      # handle exception
+
+    /*
+     * Throw a NoSuchMethodError with the method name as the message.
+     *  ecx = resolved base method
+     */
+.LOP_INVOKE_SUPER_JUMBO_nsm:
+    movl    offMethod_name(%ecx),%eax
+    jmp     common_errNoSuchMethod
+
+/* ------------------------------ */
+.L_OP_INVOKE_DIRECT_JUMBO: /* 0x124 */
+/* File: x86/OP_INVOKE_DIRECT_JUMBO.S */
+    /*
+     * Handle a jumbo direct method call.
+     *
+     * (We could defer the "is 'this' pointer null" test to the common
+     * method invocation code, and use a flag to indicate that static
+     * calls don't count.  If we do this as part of copying the arguments
+     * out we could avoiding loading the first arg twice.)
+     */
+    /* invoke-direct/jumbo {vCCCC..v(CCCC+BBBB-1)}, meth@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      2(rPC),%eax              # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
+    EXPORT_PC
+    movl      offDvmDex_pResMethods(%ecx),%ecx  # ecx<- pDvmDex->pResMethods
+    movzwl    8(rPC),rIBASE            # rIBASE<- CCCC
+    movl      (%ecx,%eax,4),%eax       # eax<- resolved methodToCall
+    testl     %eax,%eax                # already resolved?
+    GET_VREG_R  %ecx rIBASE            # ecx<- "this" ptr
+    je        .LOP_INVOKE_DIRECT_JUMBO_resolve      # not resolved, do it now
+.LOP_INVOKE_DIRECT_JUMBO_finish:
+    testl     %ecx,%ecx                # null "this"?
+    jne       common_invokeMethodJumbo # no, continue on
+    jmp       common_errNullObject
+
+    /*
+     * On entry:
+     *   TMP_SPILL  <- "this" register
+     * Things a bit ugly on this path, but it's the less
+     * frequent one.  We'll have to do some reloading.
+     */
+.LOP_INVOKE_DIRECT_JUMBO_resolve:
+     SPILL_TMP1(%ecx)
+     movl     rSELF,%ecx
+     movl     offThread_method(%ecx),%ecx  # ecx<- self->method
+     movl     2(rPC),%eax      # reference AAAAAAAA
+     movl     offMethod_clazz(%ecx),%ecx # ecx<- method->clazz
+     movl     $METHOD_DIRECT,OUT_ARG2(%esp)
+     movl     %eax,OUT_ARG1(%esp)
+     movl     %ecx,OUT_ARG0(%esp)
+     call     dvmResolveMethod # eax<- call(clazz, ref, flags)
+     UNSPILL_TMP1(%ecx)
+     testl    %eax,%eax
+     jne      .LOP_INVOKE_DIRECT_JUMBO_finish
+     jmp      common_exceptionThrown
+
+/* ------------------------------ */
+.L_OP_INVOKE_STATIC_JUMBO: /* 0x125 */
+/* File: x86/OP_INVOKE_STATIC_JUMBO.S */
+    /*
+     * Handle a jumbo static method call.
+     */
+    /* invoke-static/jumbo {vCCCC..v(CCCC+BBBB-1)}, meth@AAAAAAAA */
+    movl      rSELF,%ecx
+    movl      2(rPC),%eax               # eax<- AAAAAAAA
+    movl      offThread_methodClassDex(%ecx),%ecx # ecx<- pDvmDex
+    EXPORT_PC
+    movl      offDvmDex_pResMethods(%ecx),%ecx  # ecx<- pDvmDex->pResMethods
+    movl      (%ecx,%eax,4),%eax        # eax<- resolved methodToCall
+    testl     %eax,%eax
+    jne       common_invokeMethodJumbo
+    movl      rSELF,%ecx
+    movl      offThread_method(%ecx),%ecx # ecx<- self->method
+    movl      2(rPC),%eax               # eax<- AAAAAAAA
+    movl      offMethod_clazz(%ecx),%ecx# ecx<- method->clazz
+    movl      %eax,OUT_ARG1(%esp)       # arg1<- AAAAAAAA
+    movl      %ecx,OUT_ARG0(%esp)       # arg0<- clazz
+    movl      $METHOD_STATIC,%eax
+    movl      %eax,OUT_ARG2(%esp)       # arg2<- flags
+    call      dvmResolveMethod          # call(clazz,ref,flags)
+    testl     %eax,%eax                 # got null?
+    jne       common_invokeMethodJumbo
+    jmp       common_exceptionThrown
+
+/* ------------------------------ */
+.L_OP_INVOKE_INTERFACE_JUMBO: /* 0x126 */
+/* File: x86/OP_INVOKE_INTERFACE_JUMBO.S */
+    /*
+     * Handle a jumbo interface method call.
+     */
+    /* invoke-interface/jumbo {vCCCC..v(CCCC+BBBB-1)}, meth@AAAAAAAA */
+    movzwl     8(rPC),%eax              # eax<- CCCC
+    movl       rSELF,%ecx
+    GET_VREG_R   %eax %eax              # eax<- "this"
+    EXPORT_PC
+    testl      %eax,%eax                # null this?
+    je         common_errNullObject     # yes, fail
+    movl       offObject_clazz(%eax),%eax# eax<- thisPtr->clazz
+    movl       %eax,OUT_ARG0(%esp)                 # arg0<- class
+    movl       offThread_methodClassDex(%ecx),%eax   # eax<- methodClassDex
+    movl       offThread_method(%ecx),%ecx           # ecx<- method
+    movl       %eax,OUT_ARG3(%esp)                 # arg3<- dex
+    movl       2(rPC),%eax                         # eax<- AAAAAAAA
+    movl       %ecx,OUT_ARG2(%esp)                 # arg2<- method
+    movl       %eax,OUT_ARG1(%esp)                 # arg1<- AAAAAAAA
+    call       dvmFindInterfaceMethodInCache # eax<- call(class, ref, method, dex)
+    testl      %eax,%eax
+    je         common_exceptionThrown
+    jmp        common_invokeMethodJumbo
+
+/* ------------------------------ */
+.L_OP_UNUSED_27FF: /* 0x127 */
+/* File: x86/OP_UNUSED_27FF.S */
 /* File: x86/unused.S */
     jmp     common_abort
 
+
+/* ------------------------------ */
+.L_OP_UNUSED_28FF: /* 0x128 */
+/* File: x86/OP_UNUSED_28FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_29FF: /* 0x129 */
+/* File: x86/OP_UNUSED_29FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2AFF: /* 0x12a */
+/* File: x86/OP_UNUSED_2AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2BFF: /* 0x12b */
+/* File: x86/OP_UNUSED_2BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2CFF: /* 0x12c */
+/* File: x86/OP_UNUSED_2CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2DFF: /* 0x12d */
+/* File: x86/OP_UNUSED_2DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2EFF: /* 0x12e */
+/* File: x86/OP_UNUSED_2EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_2FFF: /* 0x12f */
+/* File: x86/OP_UNUSED_2FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_30FF: /* 0x130 */
+/* File: x86/OP_UNUSED_30FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_31FF: /* 0x131 */
+/* File: x86/OP_UNUSED_31FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_32FF: /* 0x132 */
+/* File: x86/OP_UNUSED_32FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_33FF: /* 0x133 */
+/* File: x86/OP_UNUSED_33FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_34FF: /* 0x134 */
+/* File: x86/OP_UNUSED_34FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_35FF: /* 0x135 */
+/* File: x86/OP_UNUSED_35FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_36FF: /* 0x136 */
+/* File: x86/OP_UNUSED_36FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_37FF: /* 0x137 */
+/* File: x86/OP_UNUSED_37FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_38FF: /* 0x138 */
+/* File: x86/OP_UNUSED_38FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_39FF: /* 0x139 */
+/* File: x86/OP_UNUSED_39FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3AFF: /* 0x13a */
+/* File: x86/OP_UNUSED_3AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3BFF: /* 0x13b */
+/* File: x86/OP_UNUSED_3BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3CFF: /* 0x13c */
+/* File: x86/OP_UNUSED_3CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3DFF: /* 0x13d */
+/* File: x86/OP_UNUSED_3DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3EFF: /* 0x13e */
+/* File: x86/OP_UNUSED_3EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_3FFF: /* 0x13f */
+/* File: x86/OP_UNUSED_3FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_40FF: /* 0x140 */
+/* File: x86/OP_UNUSED_40FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_41FF: /* 0x141 */
+/* File: x86/OP_UNUSED_41FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_42FF: /* 0x142 */
+/* File: x86/OP_UNUSED_42FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_43FF: /* 0x143 */
+/* File: x86/OP_UNUSED_43FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_44FF: /* 0x144 */
+/* File: x86/OP_UNUSED_44FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_45FF: /* 0x145 */
+/* File: x86/OP_UNUSED_45FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_46FF: /* 0x146 */
+/* File: x86/OP_UNUSED_46FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_47FF: /* 0x147 */
+/* File: x86/OP_UNUSED_47FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_48FF: /* 0x148 */
+/* File: x86/OP_UNUSED_48FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_49FF: /* 0x149 */
+/* File: x86/OP_UNUSED_49FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4AFF: /* 0x14a */
+/* File: x86/OP_UNUSED_4AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4BFF: /* 0x14b */
+/* File: x86/OP_UNUSED_4BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4CFF: /* 0x14c */
+/* File: x86/OP_UNUSED_4CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4DFF: /* 0x14d */
+/* File: x86/OP_UNUSED_4DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4EFF: /* 0x14e */
+/* File: x86/OP_UNUSED_4EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_4FFF: /* 0x14f */
+/* File: x86/OP_UNUSED_4FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_50FF: /* 0x150 */
+/* File: x86/OP_UNUSED_50FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_51FF: /* 0x151 */
+/* File: x86/OP_UNUSED_51FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_52FF: /* 0x152 */
+/* File: x86/OP_UNUSED_52FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_53FF: /* 0x153 */
+/* File: x86/OP_UNUSED_53FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_54FF: /* 0x154 */
+/* File: x86/OP_UNUSED_54FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_55FF: /* 0x155 */
+/* File: x86/OP_UNUSED_55FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_56FF: /* 0x156 */
+/* File: x86/OP_UNUSED_56FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_57FF: /* 0x157 */
+/* File: x86/OP_UNUSED_57FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_58FF: /* 0x158 */
+/* File: x86/OP_UNUSED_58FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_59FF: /* 0x159 */
+/* File: x86/OP_UNUSED_59FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5AFF: /* 0x15a */
+/* File: x86/OP_UNUSED_5AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5BFF: /* 0x15b */
+/* File: x86/OP_UNUSED_5BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5CFF: /* 0x15c */
+/* File: x86/OP_UNUSED_5CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5DFF: /* 0x15d */
+/* File: x86/OP_UNUSED_5DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5EFF: /* 0x15e */
+/* File: x86/OP_UNUSED_5EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_5FFF: /* 0x15f */
+/* File: x86/OP_UNUSED_5FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_60FF: /* 0x160 */
+/* File: x86/OP_UNUSED_60FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_61FF: /* 0x161 */
+/* File: x86/OP_UNUSED_61FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_62FF: /* 0x162 */
+/* File: x86/OP_UNUSED_62FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_63FF: /* 0x163 */
+/* File: x86/OP_UNUSED_63FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_64FF: /* 0x164 */
+/* File: x86/OP_UNUSED_64FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_65FF: /* 0x165 */
+/* File: x86/OP_UNUSED_65FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_66FF: /* 0x166 */
+/* File: x86/OP_UNUSED_66FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_67FF: /* 0x167 */
+/* File: x86/OP_UNUSED_67FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_68FF: /* 0x168 */
+/* File: x86/OP_UNUSED_68FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_69FF: /* 0x169 */
+/* File: x86/OP_UNUSED_69FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6AFF: /* 0x16a */
+/* File: x86/OP_UNUSED_6AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6BFF: /* 0x16b */
+/* File: x86/OP_UNUSED_6BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6CFF: /* 0x16c */
+/* File: x86/OP_UNUSED_6CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6DFF: /* 0x16d */
+/* File: x86/OP_UNUSED_6DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6EFF: /* 0x16e */
+/* File: x86/OP_UNUSED_6EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_6FFF: /* 0x16f */
+/* File: x86/OP_UNUSED_6FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_70FF: /* 0x170 */
+/* File: x86/OP_UNUSED_70FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_71FF: /* 0x171 */
+/* File: x86/OP_UNUSED_71FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_72FF: /* 0x172 */
+/* File: x86/OP_UNUSED_72FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_73FF: /* 0x173 */
+/* File: x86/OP_UNUSED_73FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_74FF: /* 0x174 */
+/* File: x86/OP_UNUSED_74FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_75FF: /* 0x175 */
+/* File: x86/OP_UNUSED_75FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_76FF: /* 0x176 */
+/* File: x86/OP_UNUSED_76FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_77FF: /* 0x177 */
+/* File: x86/OP_UNUSED_77FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_78FF: /* 0x178 */
+/* File: x86/OP_UNUSED_78FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_79FF: /* 0x179 */
+/* File: x86/OP_UNUSED_79FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7AFF: /* 0x17a */
+/* File: x86/OP_UNUSED_7AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7BFF: /* 0x17b */
+/* File: x86/OP_UNUSED_7BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7CFF: /* 0x17c */
+/* File: x86/OP_UNUSED_7CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7DFF: /* 0x17d */
+/* File: x86/OP_UNUSED_7DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7EFF: /* 0x17e */
+/* File: x86/OP_UNUSED_7EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_7FFF: /* 0x17f */
+/* File: x86/OP_UNUSED_7FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_80FF: /* 0x180 */
+/* File: x86/OP_UNUSED_80FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_81FF: /* 0x181 */
+/* File: x86/OP_UNUSED_81FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_82FF: /* 0x182 */
+/* File: x86/OP_UNUSED_82FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_83FF: /* 0x183 */
+/* File: x86/OP_UNUSED_83FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_84FF: /* 0x184 */
+/* File: x86/OP_UNUSED_84FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_85FF: /* 0x185 */
+/* File: x86/OP_UNUSED_85FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_86FF: /* 0x186 */
+/* File: x86/OP_UNUSED_86FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_87FF: /* 0x187 */
+/* File: x86/OP_UNUSED_87FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_88FF: /* 0x188 */
+/* File: x86/OP_UNUSED_88FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_89FF: /* 0x189 */
+/* File: x86/OP_UNUSED_89FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8AFF: /* 0x18a */
+/* File: x86/OP_UNUSED_8AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8BFF: /* 0x18b */
+/* File: x86/OP_UNUSED_8BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8CFF: /* 0x18c */
+/* File: x86/OP_UNUSED_8CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8DFF: /* 0x18d */
+/* File: x86/OP_UNUSED_8DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8EFF: /* 0x18e */
+/* File: x86/OP_UNUSED_8EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_8FFF: /* 0x18f */
+/* File: x86/OP_UNUSED_8FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_90FF: /* 0x190 */
+/* File: x86/OP_UNUSED_90FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_91FF: /* 0x191 */
+/* File: x86/OP_UNUSED_91FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_92FF: /* 0x192 */
+/* File: x86/OP_UNUSED_92FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_93FF: /* 0x193 */
+/* File: x86/OP_UNUSED_93FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_94FF: /* 0x194 */
+/* File: x86/OP_UNUSED_94FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_95FF: /* 0x195 */
+/* File: x86/OP_UNUSED_95FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_96FF: /* 0x196 */
+/* File: x86/OP_UNUSED_96FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_97FF: /* 0x197 */
+/* File: x86/OP_UNUSED_97FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_98FF: /* 0x198 */
+/* File: x86/OP_UNUSED_98FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_99FF: /* 0x199 */
+/* File: x86/OP_UNUSED_99FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9AFF: /* 0x19a */
+/* File: x86/OP_UNUSED_9AFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9BFF: /* 0x19b */
+/* File: x86/OP_UNUSED_9BFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9CFF: /* 0x19c */
+/* File: x86/OP_UNUSED_9CFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9DFF: /* 0x19d */
+/* File: x86/OP_UNUSED_9DFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9EFF: /* 0x19e */
+/* File: x86/OP_UNUSED_9EFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_9FFF: /* 0x19f */
+/* File: x86/OP_UNUSED_9FFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A0FF: /* 0x1a0 */
+/* File: x86/OP_UNUSED_A0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A1FF: /* 0x1a1 */
+/* File: x86/OP_UNUSED_A1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A2FF: /* 0x1a2 */
+/* File: x86/OP_UNUSED_A2FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A3FF: /* 0x1a3 */
+/* File: x86/OP_UNUSED_A3FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A4FF: /* 0x1a4 */
+/* File: x86/OP_UNUSED_A4FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A5FF: /* 0x1a5 */
+/* File: x86/OP_UNUSED_A5FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A6FF: /* 0x1a6 */
+/* File: x86/OP_UNUSED_A6FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A7FF: /* 0x1a7 */
+/* File: x86/OP_UNUSED_A7FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A8FF: /* 0x1a8 */
+/* File: x86/OP_UNUSED_A8FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_A9FF: /* 0x1a9 */
+/* File: x86/OP_UNUSED_A9FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_AAFF: /* 0x1aa */
+/* File: x86/OP_UNUSED_AAFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_ABFF: /* 0x1ab */
+/* File: x86/OP_UNUSED_ABFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_ACFF: /* 0x1ac */
+/* File: x86/OP_UNUSED_ACFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_ADFF: /* 0x1ad */
+/* File: x86/OP_UNUSED_ADFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_AEFF: /* 0x1ae */
+/* File: x86/OP_UNUSED_AEFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_AFFF: /* 0x1af */
+/* File: x86/OP_UNUSED_AFFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B0FF: /* 0x1b0 */
+/* File: x86/OP_UNUSED_B0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B1FF: /* 0x1b1 */
+/* File: x86/OP_UNUSED_B1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B2FF: /* 0x1b2 */
+/* File: x86/OP_UNUSED_B2FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B3FF: /* 0x1b3 */
+/* File: x86/OP_UNUSED_B3FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B4FF: /* 0x1b4 */
+/* File: x86/OP_UNUSED_B4FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B5FF: /* 0x1b5 */
+/* File: x86/OP_UNUSED_B5FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B6FF: /* 0x1b6 */
+/* File: x86/OP_UNUSED_B6FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B7FF: /* 0x1b7 */
+/* File: x86/OP_UNUSED_B7FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B8FF: /* 0x1b8 */
+/* File: x86/OP_UNUSED_B8FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_B9FF: /* 0x1b9 */
+/* File: x86/OP_UNUSED_B9FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BAFF: /* 0x1ba */
+/* File: x86/OP_UNUSED_BAFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BBFF: /* 0x1bb */
+/* File: x86/OP_UNUSED_BBFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BCFF: /* 0x1bc */
+/* File: x86/OP_UNUSED_BCFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BDFF: /* 0x1bd */
+/* File: x86/OP_UNUSED_BDFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BEFF: /* 0x1be */
+/* File: x86/OP_UNUSED_BEFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_BFFF: /* 0x1bf */
+/* File: x86/OP_UNUSED_BFFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C0FF: /* 0x1c0 */
+/* File: x86/OP_UNUSED_C0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C1FF: /* 0x1c1 */
+/* File: x86/OP_UNUSED_C1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C2FF: /* 0x1c2 */
+/* File: x86/OP_UNUSED_C2FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C3FF: /* 0x1c3 */
+/* File: x86/OP_UNUSED_C3FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C4FF: /* 0x1c4 */
+/* File: x86/OP_UNUSED_C4FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C5FF: /* 0x1c5 */
+/* File: x86/OP_UNUSED_C5FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C6FF: /* 0x1c6 */
+/* File: x86/OP_UNUSED_C6FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C7FF: /* 0x1c7 */
+/* File: x86/OP_UNUSED_C7FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C8FF: /* 0x1c8 */
+/* File: x86/OP_UNUSED_C8FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_C9FF: /* 0x1c9 */
+/* File: x86/OP_UNUSED_C9FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CAFF: /* 0x1ca */
+/* File: x86/OP_UNUSED_CAFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CBFF: /* 0x1cb */
+/* File: x86/OP_UNUSED_CBFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CCFF: /* 0x1cc */
+/* File: x86/OP_UNUSED_CCFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CDFF: /* 0x1cd */
+/* File: x86/OP_UNUSED_CDFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CEFF: /* 0x1ce */
+/* File: x86/OP_UNUSED_CEFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_CFFF: /* 0x1cf */
+/* File: x86/OP_UNUSED_CFFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D0FF: /* 0x1d0 */
+/* File: x86/OP_UNUSED_D0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D1FF: /* 0x1d1 */
+/* File: x86/OP_UNUSED_D1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D2FF: /* 0x1d2 */
+/* File: x86/OP_UNUSED_D2FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D3FF: /* 0x1d3 */
+/* File: x86/OP_UNUSED_D3FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D4FF: /* 0x1d4 */
+/* File: x86/OP_UNUSED_D4FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D5FF: /* 0x1d5 */
+/* File: x86/OP_UNUSED_D5FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D6FF: /* 0x1d6 */
+/* File: x86/OP_UNUSED_D6FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D7FF: /* 0x1d7 */
+/* File: x86/OP_UNUSED_D7FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D8FF: /* 0x1d8 */
+/* File: x86/OP_UNUSED_D8FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_D9FF: /* 0x1d9 */
+/* File: x86/OP_UNUSED_D9FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DAFF: /* 0x1da */
+/* File: x86/OP_UNUSED_DAFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DBFF: /* 0x1db */
+/* File: x86/OP_UNUSED_DBFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DCFF: /* 0x1dc */
+/* File: x86/OP_UNUSED_DCFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DDFF: /* 0x1dd */
+/* File: x86/OP_UNUSED_DDFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DEFF: /* 0x1de */
+/* File: x86/OP_UNUSED_DEFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_DFFF: /* 0x1df */
+/* File: x86/OP_UNUSED_DFFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E0FF: /* 0x1e0 */
+/* File: x86/OP_UNUSED_E0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E1FF: /* 0x1e1 */
+/* File: x86/OP_UNUSED_E1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E2FF: /* 0x1e2 */
+/* File: x86/OP_UNUSED_E2FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E3FF: /* 0x1e3 */
+/* File: x86/OP_UNUSED_E3FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E4FF: /* 0x1e4 */
+/* File: x86/OP_UNUSED_E4FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E5FF: /* 0x1e5 */
+/* File: x86/OP_UNUSED_E5FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E6FF: /* 0x1e6 */
+/* File: x86/OP_UNUSED_E6FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E7FF: /* 0x1e7 */
+/* File: x86/OP_UNUSED_E7FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E8FF: /* 0x1e8 */
+/* File: x86/OP_UNUSED_E8FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_E9FF: /* 0x1e9 */
+/* File: x86/OP_UNUSED_E9FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_EAFF: /* 0x1ea */
+/* File: x86/OP_UNUSED_EAFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_EBFF: /* 0x1eb */
+/* File: x86/OP_UNUSED_EBFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_ECFF: /* 0x1ec */
+/* File: x86/OP_UNUSED_ECFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_EDFF: /* 0x1ed */
+/* File: x86/OP_UNUSED_EDFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_EEFF: /* 0x1ee */
+/* File: x86/OP_UNUSED_EEFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_EFFF: /* 0x1ef */
+/* File: x86/OP_UNUSED_EFFF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_F0FF: /* 0x1f0 */
+/* File: x86/OP_UNUSED_F0FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_UNUSED_F1FF: /* 0x1f1 */
+/* File: x86/OP_UNUSED_F1FF.S */
+/* File: x86/unused.S */
+    jmp     common_abort
+
+
+/* ------------------------------ */
+.L_OP_INVOKE_OBJECT_INIT_JUMBO: /* 0x1f2 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_INVOKE_OBJECT_INIT_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IGET_VOLATILE_JUMBO: /* 0x1f3 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IGET_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IGET_WIDE_VOLATILE_JUMBO: /* 0x1f4 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IGET_WIDE_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IGET_OBJECT_VOLATILE_JUMBO: /* 0x1f5 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IGET_OBJECT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IPUT_VOLATILE_JUMBO: /* 0x1f6 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IPUT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IPUT_WIDE_VOLATILE_JUMBO: /* 0x1f7 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IPUT_WIDE_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_IPUT_OBJECT_VOLATILE_JUMBO: /* 0x1f8 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_IPUT_OBJECT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SGET_VOLATILE_JUMBO: /* 0x1f9 */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SGET_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SGET_WIDE_VOLATILE_JUMBO: /* 0x1fa */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SGET_WIDE_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SGET_OBJECT_VOLATILE_JUMBO: /* 0x1fb */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SGET_OBJECT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SPUT_VOLATILE_JUMBO: /* 0x1fc */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SPUT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SPUT_WIDE_VOLATILE_JUMBO: /* 0x1fd */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SPUT_WIDE_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_SPUT_OBJECT_VOLATILE_JUMBO: /* 0x1fe */
+    /* (stub) */
+    SAVE_PC_FP_TO_SELF %ecx          # leaves rSELF in %ecx
+    movl %ecx,OUT_ARG0(%esp)         # self is first arg to function
+    call      dvmMterp_OP_SPUT_OBJECT_VOLATILE_JUMBO     # do the real work
+    movl      rSELF,%ecx
+    LOAD_PC_FP_FROM_SELF             # retrieve updated values
+    movl      offThread_curHandlerTable(%ecx),rIBASE  # set up rIBASE
+    FETCH_INST
+    GOTO_NEXT
+/* ------------------------------ */
+.L_OP_THROW_VERIFICATION_ERROR_JUMBO: /* 0x1ff */
+/* File: x86/OP_THROW_VERIFICATION_ERROR_JUMBO.S */
+    /*
+     * Handle a jumbo throw-verification-error instruction.  This throws an
+     * exception for an error discovered during verification.  The
+     * exception is indicated by BBBB, with some detail provided by AAAAAAAA.
+     */
+    /* exop BBBB, ref@AAAAAAAA */
+    movl     rSELF,%ecx
+    movl     2(rPC),%eax                     # eax<- AAAAAAAA
+    movl     offThread_method(%ecx),%ecx       # ecx<- self->method
+    EXPORT_PC
+    movl     %eax,OUT_ARG2(%esp)             # arg2<- AAAAAAAA
+    movl     rINST,OUT_ARG1(%esp)            # arg1<- BBBB
+    movl     %ecx,OUT_ARG0(%esp)             # arg0<- method
+    call     dvmThrowVerificationError       # call(method, kind, ref)
+    jmp      common_exceptionThrown          # handle exception
 
     .size   dvmAsmInstructionStartCode, .-dvmAsmInstructionStartCode
     .global dvmAsmInstructionEndCode
@@ -15012,7 +18118,18 @@ dvmAsmAltInstructionStartCode = .L_ALT_OP_NOP
     jmp    *dvmAsmInstructionStart+(254*4)
 
 /* ------------------------------ */
-.L_ALT_OP_UNUSED_FF: /* 0xff */
+.L_ALT_OP_DISPATCH_FF: /* 0xff */
+/* File: x86/ALT_OP_DISPATCH_FF.S */
+/*
+ * Unlike other alt stubs, we don't want to call dvmCheckBefore() here.
+ * Instead, just treat this as a trampoline to reach the real alt
+ * handler (which will do the dvmCheckBefore() call.
+ */
+    leal      256(rINST),%ecx
+    GOTO_NEXT_JUMBO_R %ecx
+
+/* ------------------------------ */
+.L_ALT_OP_CONST_CLASS_JUMBO: /* 0x100 */
 /* File: x86/alt_stub.S */
 /*
  * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
@@ -15035,7 +18152,6637 @@ dvmAsmAltInstructionStartCode = .L_ALT_OP_NOP
     movl   rSELF, %eax
 1:
     movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
-    jmp    *dvmAsmInstructionStart+(255*4)
+    jmp    *dvmAsmInstructionStart+(256*4)
+
+/* ------------------------------ */
+.L_ALT_OP_CHECK_CAST_JUMBO: /* 0x101 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(257*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INSTANCE_OF_JUMBO: /* 0x102 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(258*4)
+
+/* ------------------------------ */
+.L_ALT_OP_NEW_INSTANCE_JUMBO: /* 0x103 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(259*4)
+
+/* ------------------------------ */
+.L_ALT_OP_NEW_ARRAY_JUMBO: /* 0x104 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(260*4)
+
+/* ------------------------------ */
+.L_ALT_OP_FILLED_NEW_ARRAY_JUMBO: /* 0x105 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(261*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_JUMBO: /* 0x106 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(262*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_WIDE_JUMBO: /* 0x107 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(263*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_OBJECT_JUMBO: /* 0x108 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(264*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_BOOLEAN_JUMBO: /* 0x109 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(265*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_BYTE_JUMBO: /* 0x10a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(266*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_CHAR_JUMBO: /* 0x10b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(267*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_SHORT_JUMBO: /* 0x10c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(268*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_JUMBO: /* 0x10d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(269*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_WIDE_JUMBO: /* 0x10e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(270*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_OBJECT_JUMBO: /* 0x10f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(271*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_BOOLEAN_JUMBO: /* 0x110 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(272*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_BYTE_JUMBO: /* 0x111 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(273*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_CHAR_JUMBO: /* 0x112 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(274*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_SHORT_JUMBO: /* 0x113 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(275*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_JUMBO: /* 0x114 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(276*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_WIDE_JUMBO: /* 0x115 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(277*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_OBJECT_JUMBO: /* 0x116 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(278*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_BOOLEAN_JUMBO: /* 0x117 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(279*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_BYTE_JUMBO: /* 0x118 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(280*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_CHAR_JUMBO: /* 0x119 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(281*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_SHORT_JUMBO: /* 0x11a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(282*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_JUMBO: /* 0x11b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(283*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_WIDE_JUMBO: /* 0x11c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(284*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_OBJECT_JUMBO: /* 0x11d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(285*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_BOOLEAN_JUMBO: /* 0x11e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(286*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_BYTE_JUMBO: /* 0x11f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(287*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_CHAR_JUMBO: /* 0x120 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(288*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_SHORT_JUMBO: /* 0x121 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(289*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_VIRTUAL_JUMBO: /* 0x122 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(290*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_SUPER_JUMBO: /* 0x123 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(291*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_DIRECT_JUMBO: /* 0x124 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(292*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_STATIC_JUMBO: /* 0x125 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(293*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_INTERFACE_JUMBO: /* 0x126 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(294*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_27FF: /* 0x127 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(295*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_28FF: /* 0x128 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(296*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_29FF: /* 0x129 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(297*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2AFF: /* 0x12a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(298*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2BFF: /* 0x12b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(299*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2CFF: /* 0x12c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(300*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2DFF: /* 0x12d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(301*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2EFF: /* 0x12e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(302*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_2FFF: /* 0x12f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(303*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_30FF: /* 0x130 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(304*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_31FF: /* 0x131 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(305*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_32FF: /* 0x132 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(306*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_33FF: /* 0x133 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(307*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_34FF: /* 0x134 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(308*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_35FF: /* 0x135 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(309*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_36FF: /* 0x136 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(310*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_37FF: /* 0x137 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(311*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_38FF: /* 0x138 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(312*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_39FF: /* 0x139 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(313*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3AFF: /* 0x13a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(314*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3BFF: /* 0x13b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(315*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3CFF: /* 0x13c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(316*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3DFF: /* 0x13d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(317*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3EFF: /* 0x13e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(318*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_3FFF: /* 0x13f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(319*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_40FF: /* 0x140 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(320*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_41FF: /* 0x141 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(321*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_42FF: /* 0x142 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(322*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_43FF: /* 0x143 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(323*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_44FF: /* 0x144 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(324*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_45FF: /* 0x145 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(325*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_46FF: /* 0x146 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(326*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_47FF: /* 0x147 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(327*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_48FF: /* 0x148 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(328*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_49FF: /* 0x149 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(329*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4AFF: /* 0x14a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(330*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4BFF: /* 0x14b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(331*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4CFF: /* 0x14c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(332*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4DFF: /* 0x14d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(333*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4EFF: /* 0x14e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(334*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_4FFF: /* 0x14f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(335*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_50FF: /* 0x150 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(336*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_51FF: /* 0x151 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(337*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_52FF: /* 0x152 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(338*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_53FF: /* 0x153 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(339*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_54FF: /* 0x154 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(340*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_55FF: /* 0x155 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(341*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_56FF: /* 0x156 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(342*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_57FF: /* 0x157 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(343*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_58FF: /* 0x158 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(344*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_59FF: /* 0x159 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(345*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5AFF: /* 0x15a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(346*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5BFF: /* 0x15b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(347*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5CFF: /* 0x15c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(348*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5DFF: /* 0x15d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(349*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5EFF: /* 0x15e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(350*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_5FFF: /* 0x15f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(351*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_60FF: /* 0x160 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(352*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_61FF: /* 0x161 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(353*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_62FF: /* 0x162 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(354*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_63FF: /* 0x163 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(355*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_64FF: /* 0x164 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(356*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_65FF: /* 0x165 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(357*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_66FF: /* 0x166 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(358*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_67FF: /* 0x167 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(359*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_68FF: /* 0x168 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(360*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_69FF: /* 0x169 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(361*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6AFF: /* 0x16a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(362*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6BFF: /* 0x16b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(363*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6CFF: /* 0x16c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(364*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6DFF: /* 0x16d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(365*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6EFF: /* 0x16e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(366*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_6FFF: /* 0x16f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(367*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_70FF: /* 0x170 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(368*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_71FF: /* 0x171 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(369*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_72FF: /* 0x172 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(370*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_73FF: /* 0x173 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(371*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_74FF: /* 0x174 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(372*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_75FF: /* 0x175 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(373*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_76FF: /* 0x176 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(374*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_77FF: /* 0x177 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(375*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_78FF: /* 0x178 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(376*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_79FF: /* 0x179 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(377*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7AFF: /* 0x17a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(378*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7BFF: /* 0x17b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(379*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7CFF: /* 0x17c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(380*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7DFF: /* 0x17d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(381*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7EFF: /* 0x17e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(382*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_7FFF: /* 0x17f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(383*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_80FF: /* 0x180 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(384*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_81FF: /* 0x181 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(385*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_82FF: /* 0x182 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(386*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_83FF: /* 0x183 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(387*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_84FF: /* 0x184 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(388*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_85FF: /* 0x185 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(389*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_86FF: /* 0x186 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(390*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_87FF: /* 0x187 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(391*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_88FF: /* 0x188 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(392*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_89FF: /* 0x189 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(393*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8AFF: /* 0x18a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(394*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8BFF: /* 0x18b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(395*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8CFF: /* 0x18c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(396*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8DFF: /* 0x18d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(397*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8EFF: /* 0x18e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(398*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_8FFF: /* 0x18f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(399*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_90FF: /* 0x190 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(400*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_91FF: /* 0x191 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(401*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_92FF: /* 0x192 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(402*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_93FF: /* 0x193 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(403*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_94FF: /* 0x194 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(404*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_95FF: /* 0x195 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(405*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_96FF: /* 0x196 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(406*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_97FF: /* 0x197 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(407*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_98FF: /* 0x198 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(408*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_99FF: /* 0x199 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(409*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9AFF: /* 0x19a */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(410*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9BFF: /* 0x19b */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(411*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9CFF: /* 0x19c */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(412*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9DFF: /* 0x19d */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(413*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9EFF: /* 0x19e */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(414*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_9FFF: /* 0x19f */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(415*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A0FF: /* 0x1a0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(416*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A1FF: /* 0x1a1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(417*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A2FF: /* 0x1a2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(418*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A3FF: /* 0x1a3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(419*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A4FF: /* 0x1a4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(420*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A5FF: /* 0x1a5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(421*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A6FF: /* 0x1a6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(422*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A7FF: /* 0x1a7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(423*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A8FF: /* 0x1a8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(424*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_A9FF: /* 0x1a9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(425*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_AAFF: /* 0x1aa */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(426*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_ABFF: /* 0x1ab */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(427*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_ACFF: /* 0x1ac */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(428*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_ADFF: /* 0x1ad */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(429*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_AEFF: /* 0x1ae */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(430*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_AFFF: /* 0x1af */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(431*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B0FF: /* 0x1b0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(432*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B1FF: /* 0x1b1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(433*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B2FF: /* 0x1b2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(434*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B3FF: /* 0x1b3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(435*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B4FF: /* 0x1b4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(436*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B5FF: /* 0x1b5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(437*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B6FF: /* 0x1b6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(438*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B7FF: /* 0x1b7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(439*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B8FF: /* 0x1b8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(440*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_B9FF: /* 0x1b9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(441*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BAFF: /* 0x1ba */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(442*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BBFF: /* 0x1bb */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(443*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BCFF: /* 0x1bc */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(444*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BDFF: /* 0x1bd */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(445*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BEFF: /* 0x1be */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(446*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_BFFF: /* 0x1bf */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(447*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C0FF: /* 0x1c0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(448*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C1FF: /* 0x1c1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(449*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C2FF: /* 0x1c2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(450*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C3FF: /* 0x1c3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(451*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C4FF: /* 0x1c4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(452*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C5FF: /* 0x1c5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(453*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C6FF: /* 0x1c6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(454*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C7FF: /* 0x1c7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(455*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C8FF: /* 0x1c8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(456*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_C9FF: /* 0x1c9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(457*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CAFF: /* 0x1ca */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(458*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CBFF: /* 0x1cb */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(459*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CCFF: /* 0x1cc */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(460*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CDFF: /* 0x1cd */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(461*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CEFF: /* 0x1ce */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(462*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_CFFF: /* 0x1cf */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(463*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D0FF: /* 0x1d0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(464*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D1FF: /* 0x1d1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(465*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D2FF: /* 0x1d2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(466*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D3FF: /* 0x1d3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(467*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D4FF: /* 0x1d4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(468*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D5FF: /* 0x1d5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(469*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D6FF: /* 0x1d6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(470*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D7FF: /* 0x1d7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(471*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D8FF: /* 0x1d8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(472*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_D9FF: /* 0x1d9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(473*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DAFF: /* 0x1da */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(474*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DBFF: /* 0x1db */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(475*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DCFF: /* 0x1dc */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(476*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DDFF: /* 0x1dd */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(477*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DEFF: /* 0x1de */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(478*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_DFFF: /* 0x1df */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(479*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E0FF: /* 0x1e0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(480*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E1FF: /* 0x1e1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(481*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E2FF: /* 0x1e2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(482*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E3FF: /* 0x1e3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(483*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E4FF: /* 0x1e4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(484*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E5FF: /* 0x1e5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(485*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E6FF: /* 0x1e6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(486*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E7FF: /* 0x1e7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(487*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E8FF: /* 0x1e8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(488*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_E9FF: /* 0x1e9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(489*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_EAFF: /* 0x1ea */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(490*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_EBFF: /* 0x1eb */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(491*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_ECFF: /* 0x1ec */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(492*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_EDFF: /* 0x1ed */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(493*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_EEFF: /* 0x1ee */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(494*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_EFFF: /* 0x1ef */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(495*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_F0FF: /* 0x1f0 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(496*4)
+
+/* ------------------------------ */
+.L_ALT_OP_UNUSED_F1FF: /* 0x1f1 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(497*4)
+
+/* ------------------------------ */
+.L_ALT_OP_INVOKE_OBJECT_INIT_JUMBO: /* 0x1f2 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(498*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_VOLATILE_JUMBO: /* 0x1f3 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(499*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_WIDE_VOLATILE_JUMBO: /* 0x1f4 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(500*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IGET_OBJECT_VOLATILE_JUMBO: /* 0x1f5 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(501*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_VOLATILE_JUMBO: /* 0x1f6 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(502*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_WIDE_VOLATILE_JUMBO: /* 0x1f7 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(503*4)
+
+/* ------------------------------ */
+.L_ALT_OP_IPUT_OBJECT_VOLATILE_JUMBO: /* 0x1f8 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(504*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_VOLATILE_JUMBO: /* 0x1f9 */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(505*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_WIDE_VOLATILE_JUMBO: /* 0x1fa */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(506*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SGET_OBJECT_VOLATILE_JUMBO: /* 0x1fb */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(507*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_VOLATILE_JUMBO: /* 0x1fc */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(508*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_WIDE_VOLATILE_JUMBO: /* 0x1fd */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(509*4)
+
+/* ------------------------------ */
+.L_ALT_OP_SPUT_OBJECT_VOLATILE_JUMBO: /* 0x1fe */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(510*4)
+
+/* ------------------------------ */
+.L_ALT_OP_THROW_VERIFICATION_ERROR_JUMBO: /* 0x1ff */
+/* File: x86/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.  Unlike the Arm handler, we can't do this as a tail call
+ * because rIBASE is caller save and we need to reload it.
+ *
+ * Note that unlike in the Arm implementation, we should never arrive
+ * here with a zero breakFlag because we always refresh rIBASE on
+ * return.
+ */
+    EXPORT_PC
+    movl   rSELF, %eax
+    movl   rPC, OUT_ARG0(%esp)
+    cmpb   $0,offThread_breakFlags(%eax)    # anything to do?
+    movl   rFP, OUT_ARG1(%esp)
+    je     1f                                # reload rIBASE & resume if not
+    movl   %eax, OUT_ARG2(%esp)
+    call   dvmCheckBefore                    # (dPC, dFP, self)
+    movl   rSELF, %eax
+1:
+    movl   offThread_curHandlerTable(%eax), rIBASE # reload rIBASE
+    jmp    *dvmAsmInstructionStart+(511*4)
 
     .size   dvmAsmAltInstructionStartCode, .-dvmAsmAltInstructionStartCode
     .global dvmAsmAltInstructionEndCode
@@ -15299,7 +25046,263 @@ dvmAsmInstructionStart:
     .long .L_OP_IPUT_OBJECT_VOLATILE /* 0xfc */
     .long .L_OP_SGET_OBJECT_VOLATILE /* 0xfd */
     .long .L_OP_SPUT_OBJECT_VOLATILE /* 0xfe */
-    .long .L_OP_UNUSED_FF /* 0xff */
+    .long .L_OP_DISPATCH_FF /* 0xff */
+    .long .L_OP_CONST_CLASS_JUMBO /* 0x100 */
+    .long .L_OP_CHECK_CAST_JUMBO /* 0x101 */
+    .long .L_OP_INSTANCE_OF_JUMBO /* 0x102 */
+    .long .L_OP_NEW_INSTANCE_JUMBO /* 0x103 */
+    .long .L_OP_NEW_ARRAY_JUMBO /* 0x104 */
+    .long .L_OP_FILLED_NEW_ARRAY_JUMBO /* 0x105 */
+    .long .L_OP_IGET_JUMBO /* 0x106 */
+    .long .L_OP_IGET_WIDE_JUMBO /* 0x107 */
+    .long .L_OP_IGET_OBJECT_JUMBO /* 0x108 */
+    .long .L_OP_IGET_BOOLEAN_JUMBO /* 0x109 */
+    .long .L_OP_IGET_BYTE_JUMBO /* 0x10a */
+    .long .L_OP_IGET_CHAR_JUMBO /* 0x10b */
+    .long .L_OP_IGET_SHORT_JUMBO /* 0x10c */
+    .long .L_OP_IPUT_JUMBO /* 0x10d */
+    .long .L_OP_IPUT_WIDE_JUMBO /* 0x10e */
+    .long .L_OP_IPUT_OBJECT_JUMBO /* 0x10f */
+    .long .L_OP_IPUT_BOOLEAN_JUMBO /* 0x110 */
+    .long .L_OP_IPUT_BYTE_JUMBO /* 0x111 */
+    .long .L_OP_IPUT_CHAR_JUMBO /* 0x112 */
+    .long .L_OP_IPUT_SHORT_JUMBO /* 0x113 */
+    .long .L_OP_SGET_JUMBO /* 0x114 */
+    .long .L_OP_SGET_WIDE_JUMBO /* 0x115 */
+    .long .L_OP_SGET_OBJECT_JUMBO /* 0x116 */
+    .long .L_OP_SGET_BOOLEAN_JUMBO /* 0x117 */
+    .long .L_OP_SGET_BYTE_JUMBO /* 0x118 */
+    .long .L_OP_SGET_CHAR_JUMBO /* 0x119 */
+    .long .L_OP_SGET_SHORT_JUMBO /* 0x11a */
+    .long .L_OP_SPUT_JUMBO /* 0x11b */
+    .long .L_OP_SPUT_WIDE_JUMBO /* 0x11c */
+    .long .L_OP_SPUT_OBJECT_JUMBO /* 0x11d */
+    .long .L_OP_SPUT_BOOLEAN_JUMBO /* 0x11e */
+    .long .L_OP_SPUT_BYTE_JUMBO /* 0x11f */
+    .long .L_OP_SPUT_CHAR_JUMBO /* 0x120 */
+    .long .L_OP_SPUT_SHORT_JUMBO /* 0x121 */
+    .long .L_OP_INVOKE_VIRTUAL_JUMBO /* 0x122 */
+    .long .L_OP_INVOKE_SUPER_JUMBO /* 0x123 */
+    .long .L_OP_INVOKE_DIRECT_JUMBO /* 0x124 */
+    .long .L_OP_INVOKE_STATIC_JUMBO /* 0x125 */
+    .long .L_OP_INVOKE_INTERFACE_JUMBO /* 0x126 */
+    .long .L_OP_UNUSED_27FF /* 0x127 */
+    .long .L_OP_UNUSED_28FF /* 0x128 */
+    .long .L_OP_UNUSED_29FF /* 0x129 */
+    .long .L_OP_UNUSED_2AFF /* 0x12a */
+    .long .L_OP_UNUSED_2BFF /* 0x12b */
+    .long .L_OP_UNUSED_2CFF /* 0x12c */
+    .long .L_OP_UNUSED_2DFF /* 0x12d */
+    .long .L_OP_UNUSED_2EFF /* 0x12e */
+    .long .L_OP_UNUSED_2FFF /* 0x12f */
+    .long .L_OP_UNUSED_30FF /* 0x130 */
+    .long .L_OP_UNUSED_31FF /* 0x131 */
+    .long .L_OP_UNUSED_32FF /* 0x132 */
+    .long .L_OP_UNUSED_33FF /* 0x133 */
+    .long .L_OP_UNUSED_34FF /* 0x134 */
+    .long .L_OP_UNUSED_35FF /* 0x135 */
+    .long .L_OP_UNUSED_36FF /* 0x136 */
+    .long .L_OP_UNUSED_37FF /* 0x137 */
+    .long .L_OP_UNUSED_38FF /* 0x138 */
+    .long .L_OP_UNUSED_39FF /* 0x139 */
+    .long .L_OP_UNUSED_3AFF /* 0x13a */
+    .long .L_OP_UNUSED_3BFF /* 0x13b */
+    .long .L_OP_UNUSED_3CFF /* 0x13c */
+    .long .L_OP_UNUSED_3DFF /* 0x13d */
+    .long .L_OP_UNUSED_3EFF /* 0x13e */
+    .long .L_OP_UNUSED_3FFF /* 0x13f */
+    .long .L_OP_UNUSED_40FF /* 0x140 */
+    .long .L_OP_UNUSED_41FF /* 0x141 */
+    .long .L_OP_UNUSED_42FF /* 0x142 */
+    .long .L_OP_UNUSED_43FF /* 0x143 */
+    .long .L_OP_UNUSED_44FF /* 0x144 */
+    .long .L_OP_UNUSED_45FF /* 0x145 */
+    .long .L_OP_UNUSED_46FF /* 0x146 */
+    .long .L_OP_UNUSED_47FF /* 0x147 */
+    .long .L_OP_UNUSED_48FF /* 0x148 */
+    .long .L_OP_UNUSED_49FF /* 0x149 */
+    .long .L_OP_UNUSED_4AFF /* 0x14a */
+    .long .L_OP_UNUSED_4BFF /* 0x14b */
+    .long .L_OP_UNUSED_4CFF /* 0x14c */
+    .long .L_OP_UNUSED_4DFF /* 0x14d */
+    .long .L_OP_UNUSED_4EFF /* 0x14e */
+    .long .L_OP_UNUSED_4FFF /* 0x14f */
+    .long .L_OP_UNUSED_50FF /* 0x150 */
+    .long .L_OP_UNUSED_51FF /* 0x151 */
+    .long .L_OP_UNUSED_52FF /* 0x152 */
+    .long .L_OP_UNUSED_53FF /* 0x153 */
+    .long .L_OP_UNUSED_54FF /* 0x154 */
+    .long .L_OP_UNUSED_55FF /* 0x155 */
+    .long .L_OP_UNUSED_56FF /* 0x156 */
+    .long .L_OP_UNUSED_57FF /* 0x157 */
+    .long .L_OP_UNUSED_58FF /* 0x158 */
+    .long .L_OP_UNUSED_59FF /* 0x159 */
+    .long .L_OP_UNUSED_5AFF /* 0x15a */
+    .long .L_OP_UNUSED_5BFF /* 0x15b */
+    .long .L_OP_UNUSED_5CFF /* 0x15c */
+    .long .L_OP_UNUSED_5DFF /* 0x15d */
+    .long .L_OP_UNUSED_5EFF /* 0x15e */
+    .long .L_OP_UNUSED_5FFF /* 0x15f */
+    .long .L_OP_UNUSED_60FF /* 0x160 */
+    .long .L_OP_UNUSED_61FF /* 0x161 */
+    .long .L_OP_UNUSED_62FF /* 0x162 */
+    .long .L_OP_UNUSED_63FF /* 0x163 */
+    .long .L_OP_UNUSED_64FF /* 0x164 */
+    .long .L_OP_UNUSED_65FF /* 0x165 */
+    .long .L_OP_UNUSED_66FF /* 0x166 */
+    .long .L_OP_UNUSED_67FF /* 0x167 */
+    .long .L_OP_UNUSED_68FF /* 0x168 */
+    .long .L_OP_UNUSED_69FF /* 0x169 */
+    .long .L_OP_UNUSED_6AFF /* 0x16a */
+    .long .L_OP_UNUSED_6BFF /* 0x16b */
+    .long .L_OP_UNUSED_6CFF /* 0x16c */
+    .long .L_OP_UNUSED_6DFF /* 0x16d */
+    .long .L_OP_UNUSED_6EFF /* 0x16e */
+    .long .L_OP_UNUSED_6FFF /* 0x16f */
+    .long .L_OP_UNUSED_70FF /* 0x170 */
+    .long .L_OP_UNUSED_71FF /* 0x171 */
+    .long .L_OP_UNUSED_72FF /* 0x172 */
+    .long .L_OP_UNUSED_73FF /* 0x173 */
+    .long .L_OP_UNUSED_74FF /* 0x174 */
+    .long .L_OP_UNUSED_75FF /* 0x175 */
+    .long .L_OP_UNUSED_76FF /* 0x176 */
+    .long .L_OP_UNUSED_77FF /* 0x177 */
+    .long .L_OP_UNUSED_78FF /* 0x178 */
+    .long .L_OP_UNUSED_79FF /* 0x179 */
+    .long .L_OP_UNUSED_7AFF /* 0x17a */
+    .long .L_OP_UNUSED_7BFF /* 0x17b */
+    .long .L_OP_UNUSED_7CFF /* 0x17c */
+    .long .L_OP_UNUSED_7DFF /* 0x17d */
+    .long .L_OP_UNUSED_7EFF /* 0x17e */
+    .long .L_OP_UNUSED_7FFF /* 0x17f */
+    .long .L_OP_UNUSED_80FF /* 0x180 */
+    .long .L_OP_UNUSED_81FF /* 0x181 */
+    .long .L_OP_UNUSED_82FF /* 0x182 */
+    .long .L_OP_UNUSED_83FF /* 0x183 */
+    .long .L_OP_UNUSED_84FF /* 0x184 */
+    .long .L_OP_UNUSED_85FF /* 0x185 */
+    .long .L_OP_UNUSED_86FF /* 0x186 */
+    .long .L_OP_UNUSED_87FF /* 0x187 */
+    .long .L_OP_UNUSED_88FF /* 0x188 */
+    .long .L_OP_UNUSED_89FF /* 0x189 */
+    .long .L_OP_UNUSED_8AFF /* 0x18a */
+    .long .L_OP_UNUSED_8BFF /* 0x18b */
+    .long .L_OP_UNUSED_8CFF /* 0x18c */
+    .long .L_OP_UNUSED_8DFF /* 0x18d */
+    .long .L_OP_UNUSED_8EFF /* 0x18e */
+    .long .L_OP_UNUSED_8FFF /* 0x18f */
+    .long .L_OP_UNUSED_90FF /* 0x190 */
+    .long .L_OP_UNUSED_91FF /* 0x191 */
+    .long .L_OP_UNUSED_92FF /* 0x192 */
+    .long .L_OP_UNUSED_93FF /* 0x193 */
+    .long .L_OP_UNUSED_94FF /* 0x194 */
+    .long .L_OP_UNUSED_95FF /* 0x195 */
+    .long .L_OP_UNUSED_96FF /* 0x196 */
+    .long .L_OP_UNUSED_97FF /* 0x197 */
+    .long .L_OP_UNUSED_98FF /* 0x198 */
+    .long .L_OP_UNUSED_99FF /* 0x199 */
+    .long .L_OP_UNUSED_9AFF /* 0x19a */
+    .long .L_OP_UNUSED_9BFF /* 0x19b */
+    .long .L_OP_UNUSED_9CFF /* 0x19c */
+    .long .L_OP_UNUSED_9DFF /* 0x19d */
+    .long .L_OP_UNUSED_9EFF /* 0x19e */
+    .long .L_OP_UNUSED_9FFF /* 0x19f */
+    .long .L_OP_UNUSED_A0FF /* 0x1a0 */
+    .long .L_OP_UNUSED_A1FF /* 0x1a1 */
+    .long .L_OP_UNUSED_A2FF /* 0x1a2 */
+    .long .L_OP_UNUSED_A3FF /* 0x1a3 */
+    .long .L_OP_UNUSED_A4FF /* 0x1a4 */
+    .long .L_OP_UNUSED_A5FF /* 0x1a5 */
+    .long .L_OP_UNUSED_A6FF /* 0x1a6 */
+    .long .L_OP_UNUSED_A7FF /* 0x1a7 */
+    .long .L_OP_UNUSED_A8FF /* 0x1a8 */
+    .long .L_OP_UNUSED_A9FF /* 0x1a9 */
+    .long .L_OP_UNUSED_AAFF /* 0x1aa */
+    .long .L_OP_UNUSED_ABFF /* 0x1ab */
+    .long .L_OP_UNUSED_ACFF /* 0x1ac */
+    .long .L_OP_UNUSED_ADFF /* 0x1ad */
+    .long .L_OP_UNUSED_AEFF /* 0x1ae */
+    .long .L_OP_UNUSED_AFFF /* 0x1af */
+    .long .L_OP_UNUSED_B0FF /* 0x1b0 */
+    .long .L_OP_UNUSED_B1FF /* 0x1b1 */
+    .long .L_OP_UNUSED_B2FF /* 0x1b2 */
+    .long .L_OP_UNUSED_B3FF /* 0x1b3 */
+    .long .L_OP_UNUSED_B4FF /* 0x1b4 */
+    .long .L_OP_UNUSED_B5FF /* 0x1b5 */
+    .long .L_OP_UNUSED_B6FF /* 0x1b6 */
+    .long .L_OP_UNUSED_B7FF /* 0x1b7 */
+    .long .L_OP_UNUSED_B8FF /* 0x1b8 */
+    .long .L_OP_UNUSED_B9FF /* 0x1b9 */
+    .long .L_OP_UNUSED_BAFF /* 0x1ba */
+    .long .L_OP_UNUSED_BBFF /* 0x1bb */
+    .long .L_OP_UNUSED_BCFF /* 0x1bc */
+    .long .L_OP_UNUSED_BDFF /* 0x1bd */
+    .long .L_OP_UNUSED_BEFF /* 0x1be */
+    .long .L_OP_UNUSED_BFFF /* 0x1bf */
+    .long .L_OP_UNUSED_C0FF /* 0x1c0 */
+    .long .L_OP_UNUSED_C1FF /* 0x1c1 */
+    .long .L_OP_UNUSED_C2FF /* 0x1c2 */
+    .long .L_OP_UNUSED_C3FF /* 0x1c3 */
+    .long .L_OP_UNUSED_C4FF /* 0x1c4 */
+    .long .L_OP_UNUSED_C5FF /* 0x1c5 */
+    .long .L_OP_UNUSED_C6FF /* 0x1c6 */
+    .long .L_OP_UNUSED_C7FF /* 0x1c7 */
+    .long .L_OP_UNUSED_C8FF /* 0x1c8 */
+    .long .L_OP_UNUSED_C9FF /* 0x1c9 */
+    .long .L_OP_UNUSED_CAFF /* 0x1ca */
+    .long .L_OP_UNUSED_CBFF /* 0x1cb */
+    .long .L_OP_UNUSED_CCFF /* 0x1cc */
+    .long .L_OP_UNUSED_CDFF /* 0x1cd */
+    .long .L_OP_UNUSED_CEFF /* 0x1ce */
+    .long .L_OP_UNUSED_CFFF /* 0x1cf */
+    .long .L_OP_UNUSED_D0FF /* 0x1d0 */
+    .long .L_OP_UNUSED_D1FF /* 0x1d1 */
+    .long .L_OP_UNUSED_D2FF /* 0x1d2 */
+    .long .L_OP_UNUSED_D3FF /* 0x1d3 */
+    .long .L_OP_UNUSED_D4FF /* 0x1d4 */
+    .long .L_OP_UNUSED_D5FF /* 0x1d5 */
+    .long .L_OP_UNUSED_D6FF /* 0x1d6 */
+    .long .L_OP_UNUSED_D7FF /* 0x1d7 */
+    .long .L_OP_UNUSED_D8FF /* 0x1d8 */
+    .long .L_OP_UNUSED_D9FF /* 0x1d9 */
+    .long .L_OP_UNUSED_DAFF /* 0x1da */
+    .long .L_OP_UNUSED_DBFF /* 0x1db */
+    .long .L_OP_UNUSED_DCFF /* 0x1dc */
+    .long .L_OP_UNUSED_DDFF /* 0x1dd */
+    .long .L_OP_UNUSED_DEFF /* 0x1de */
+    .long .L_OP_UNUSED_DFFF /* 0x1df */
+    .long .L_OP_UNUSED_E0FF /* 0x1e0 */
+    .long .L_OP_UNUSED_E1FF /* 0x1e1 */
+    .long .L_OP_UNUSED_E2FF /* 0x1e2 */
+    .long .L_OP_UNUSED_E3FF /* 0x1e3 */
+    .long .L_OP_UNUSED_E4FF /* 0x1e4 */
+    .long .L_OP_UNUSED_E5FF /* 0x1e5 */
+    .long .L_OP_UNUSED_E6FF /* 0x1e6 */
+    .long .L_OP_UNUSED_E7FF /* 0x1e7 */
+    .long .L_OP_UNUSED_E8FF /* 0x1e8 */
+    .long .L_OP_UNUSED_E9FF /* 0x1e9 */
+    .long .L_OP_UNUSED_EAFF /* 0x1ea */
+    .long .L_OP_UNUSED_EBFF /* 0x1eb */
+    .long .L_OP_UNUSED_ECFF /* 0x1ec */
+    .long .L_OP_UNUSED_EDFF /* 0x1ed */
+    .long .L_OP_UNUSED_EEFF /* 0x1ee */
+    .long .L_OP_UNUSED_EFFF /* 0x1ef */
+    .long .L_OP_UNUSED_F0FF /* 0x1f0 */
+    .long .L_OP_UNUSED_F1FF /* 0x1f1 */
+    .long .L_OP_INVOKE_OBJECT_INIT_JUMBO /* 0x1f2 */
+    .long .L_OP_IGET_VOLATILE_JUMBO /* 0x1f3 */
+    .long .L_OP_IGET_WIDE_VOLATILE_JUMBO /* 0x1f4 */
+    .long .L_OP_IGET_OBJECT_VOLATILE_JUMBO /* 0x1f5 */
+    .long .L_OP_IPUT_VOLATILE_JUMBO /* 0x1f6 */
+    .long .L_OP_IPUT_WIDE_VOLATILE_JUMBO /* 0x1f7 */
+    .long .L_OP_IPUT_OBJECT_VOLATILE_JUMBO /* 0x1f8 */
+    .long .L_OP_SGET_VOLATILE_JUMBO /* 0x1f9 */
+    .long .L_OP_SGET_WIDE_VOLATILE_JUMBO /* 0x1fa */
+    .long .L_OP_SGET_OBJECT_VOLATILE_JUMBO /* 0x1fb */
+    .long .L_OP_SPUT_VOLATILE_JUMBO /* 0x1fc */
+    .long .L_OP_SPUT_WIDE_VOLATILE_JUMBO /* 0x1fd */
+    .long .L_OP_SPUT_OBJECT_VOLATILE_JUMBO /* 0x1fe */
+    .long .L_OP_THROW_VERIFICATION_ERROR_JUMBO /* 0x1ff */
 
     .global dvmAsmAltInstructionStart
     .text
@@ -15559,7 +25562,263 @@ dvmAsmAltInstructionStart:
     .long .L_ALT_OP_IPUT_OBJECT_VOLATILE /* 0xfc */
     .long .L_ALT_OP_SGET_OBJECT_VOLATILE /* 0xfd */
     .long .L_ALT_OP_SPUT_OBJECT_VOLATILE /* 0xfe */
-    .long .L_ALT_OP_UNUSED_FF /* 0xff */
+    .long .L_ALT_OP_DISPATCH_FF /* 0xff */
+    .long .L_ALT_OP_CONST_CLASS_JUMBO /* 0x100 */
+    .long .L_ALT_OP_CHECK_CAST_JUMBO /* 0x101 */
+    .long .L_ALT_OP_INSTANCE_OF_JUMBO /* 0x102 */
+    .long .L_ALT_OP_NEW_INSTANCE_JUMBO /* 0x103 */
+    .long .L_ALT_OP_NEW_ARRAY_JUMBO /* 0x104 */
+    .long .L_ALT_OP_FILLED_NEW_ARRAY_JUMBO /* 0x105 */
+    .long .L_ALT_OP_IGET_JUMBO /* 0x106 */
+    .long .L_ALT_OP_IGET_WIDE_JUMBO /* 0x107 */
+    .long .L_ALT_OP_IGET_OBJECT_JUMBO /* 0x108 */
+    .long .L_ALT_OP_IGET_BOOLEAN_JUMBO /* 0x109 */
+    .long .L_ALT_OP_IGET_BYTE_JUMBO /* 0x10a */
+    .long .L_ALT_OP_IGET_CHAR_JUMBO /* 0x10b */
+    .long .L_ALT_OP_IGET_SHORT_JUMBO /* 0x10c */
+    .long .L_ALT_OP_IPUT_JUMBO /* 0x10d */
+    .long .L_ALT_OP_IPUT_WIDE_JUMBO /* 0x10e */
+    .long .L_ALT_OP_IPUT_OBJECT_JUMBO /* 0x10f */
+    .long .L_ALT_OP_IPUT_BOOLEAN_JUMBO /* 0x110 */
+    .long .L_ALT_OP_IPUT_BYTE_JUMBO /* 0x111 */
+    .long .L_ALT_OP_IPUT_CHAR_JUMBO /* 0x112 */
+    .long .L_ALT_OP_IPUT_SHORT_JUMBO /* 0x113 */
+    .long .L_ALT_OP_SGET_JUMBO /* 0x114 */
+    .long .L_ALT_OP_SGET_WIDE_JUMBO /* 0x115 */
+    .long .L_ALT_OP_SGET_OBJECT_JUMBO /* 0x116 */
+    .long .L_ALT_OP_SGET_BOOLEAN_JUMBO /* 0x117 */
+    .long .L_ALT_OP_SGET_BYTE_JUMBO /* 0x118 */
+    .long .L_ALT_OP_SGET_CHAR_JUMBO /* 0x119 */
+    .long .L_ALT_OP_SGET_SHORT_JUMBO /* 0x11a */
+    .long .L_ALT_OP_SPUT_JUMBO /* 0x11b */
+    .long .L_ALT_OP_SPUT_WIDE_JUMBO /* 0x11c */
+    .long .L_ALT_OP_SPUT_OBJECT_JUMBO /* 0x11d */
+    .long .L_ALT_OP_SPUT_BOOLEAN_JUMBO /* 0x11e */
+    .long .L_ALT_OP_SPUT_BYTE_JUMBO /* 0x11f */
+    .long .L_ALT_OP_SPUT_CHAR_JUMBO /* 0x120 */
+    .long .L_ALT_OP_SPUT_SHORT_JUMBO /* 0x121 */
+    .long .L_ALT_OP_INVOKE_VIRTUAL_JUMBO /* 0x122 */
+    .long .L_ALT_OP_INVOKE_SUPER_JUMBO /* 0x123 */
+    .long .L_ALT_OP_INVOKE_DIRECT_JUMBO /* 0x124 */
+    .long .L_ALT_OP_INVOKE_STATIC_JUMBO /* 0x125 */
+    .long .L_ALT_OP_INVOKE_INTERFACE_JUMBO /* 0x126 */
+    .long .L_ALT_OP_UNUSED_27FF /* 0x127 */
+    .long .L_ALT_OP_UNUSED_28FF /* 0x128 */
+    .long .L_ALT_OP_UNUSED_29FF /* 0x129 */
+    .long .L_ALT_OP_UNUSED_2AFF /* 0x12a */
+    .long .L_ALT_OP_UNUSED_2BFF /* 0x12b */
+    .long .L_ALT_OP_UNUSED_2CFF /* 0x12c */
+    .long .L_ALT_OP_UNUSED_2DFF /* 0x12d */
+    .long .L_ALT_OP_UNUSED_2EFF /* 0x12e */
+    .long .L_ALT_OP_UNUSED_2FFF /* 0x12f */
+    .long .L_ALT_OP_UNUSED_30FF /* 0x130 */
+    .long .L_ALT_OP_UNUSED_31FF /* 0x131 */
+    .long .L_ALT_OP_UNUSED_32FF /* 0x132 */
+    .long .L_ALT_OP_UNUSED_33FF /* 0x133 */
+    .long .L_ALT_OP_UNUSED_34FF /* 0x134 */
+    .long .L_ALT_OP_UNUSED_35FF /* 0x135 */
+    .long .L_ALT_OP_UNUSED_36FF /* 0x136 */
+    .long .L_ALT_OP_UNUSED_37FF /* 0x137 */
+    .long .L_ALT_OP_UNUSED_38FF /* 0x138 */
+    .long .L_ALT_OP_UNUSED_39FF /* 0x139 */
+    .long .L_ALT_OP_UNUSED_3AFF /* 0x13a */
+    .long .L_ALT_OP_UNUSED_3BFF /* 0x13b */
+    .long .L_ALT_OP_UNUSED_3CFF /* 0x13c */
+    .long .L_ALT_OP_UNUSED_3DFF /* 0x13d */
+    .long .L_ALT_OP_UNUSED_3EFF /* 0x13e */
+    .long .L_ALT_OP_UNUSED_3FFF /* 0x13f */
+    .long .L_ALT_OP_UNUSED_40FF /* 0x140 */
+    .long .L_ALT_OP_UNUSED_41FF /* 0x141 */
+    .long .L_ALT_OP_UNUSED_42FF /* 0x142 */
+    .long .L_ALT_OP_UNUSED_43FF /* 0x143 */
+    .long .L_ALT_OP_UNUSED_44FF /* 0x144 */
+    .long .L_ALT_OP_UNUSED_45FF /* 0x145 */
+    .long .L_ALT_OP_UNUSED_46FF /* 0x146 */
+    .long .L_ALT_OP_UNUSED_47FF /* 0x147 */
+    .long .L_ALT_OP_UNUSED_48FF /* 0x148 */
+    .long .L_ALT_OP_UNUSED_49FF /* 0x149 */
+    .long .L_ALT_OP_UNUSED_4AFF /* 0x14a */
+    .long .L_ALT_OP_UNUSED_4BFF /* 0x14b */
+    .long .L_ALT_OP_UNUSED_4CFF /* 0x14c */
+    .long .L_ALT_OP_UNUSED_4DFF /* 0x14d */
+    .long .L_ALT_OP_UNUSED_4EFF /* 0x14e */
+    .long .L_ALT_OP_UNUSED_4FFF /* 0x14f */
+    .long .L_ALT_OP_UNUSED_50FF /* 0x150 */
+    .long .L_ALT_OP_UNUSED_51FF /* 0x151 */
+    .long .L_ALT_OP_UNUSED_52FF /* 0x152 */
+    .long .L_ALT_OP_UNUSED_53FF /* 0x153 */
+    .long .L_ALT_OP_UNUSED_54FF /* 0x154 */
+    .long .L_ALT_OP_UNUSED_55FF /* 0x155 */
+    .long .L_ALT_OP_UNUSED_56FF /* 0x156 */
+    .long .L_ALT_OP_UNUSED_57FF /* 0x157 */
+    .long .L_ALT_OP_UNUSED_58FF /* 0x158 */
+    .long .L_ALT_OP_UNUSED_59FF /* 0x159 */
+    .long .L_ALT_OP_UNUSED_5AFF /* 0x15a */
+    .long .L_ALT_OP_UNUSED_5BFF /* 0x15b */
+    .long .L_ALT_OP_UNUSED_5CFF /* 0x15c */
+    .long .L_ALT_OP_UNUSED_5DFF /* 0x15d */
+    .long .L_ALT_OP_UNUSED_5EFF /* 0x15e */
+    .long .L_ALT_OP_UNUSED_5FFF /* 0x15f */
+    .long .L_ALT_OP_UNUSED_60FF /* 0x160 */
+    .long .L_ALT_OP_UNUSED_61FF /* 0x161 */
+    .long .L_ALT_OP_UNUSED_62FF /* 0x162 */
+    .long .L_ALT_OP_UNUSED_63FF /* 0x163 */
+    .long .L_ALT_OP_UNUSED_64FF /* 0x164 */
+    .long .L_ALT_OP_UNUSED_65FF /* 0x165 */
+    .long .L_ALT_OP_UNUSED_66FF /* 0x166 */
+    .long .L_ALT_OP_UNUSED_67FF /* 0x167 */
+    .long .L_ALT_OP_UNUSED_68FF /* 0x168 */
+    .long .L_ALT_OP_UNUSED_69FF /* 0x169 */
+    .long .L_ALT_OP_UNUSED_6AFF /* 0x16a */
+    .long .L_ALT_OP_UNUSED_6BFF /* 0x16b */
+    .long .L_ALT_OP_UNUSED_6CFF /* 0x16c */
+    .long .L_ALT_OP_UNUSED_6DFF /* 0x16d */
+    .long .L_ALT_OP_UNUSED_6EFF /* 0x16e */
+    .long .L_ALT_OP_UNUSED_6FFF /* 0x16f */
+    .long .L_ALT_OP_UNUSED_70FF /* 0x170 */
+    .long .L_ALT_OP_UNUSED_71FF /* 0x171 */
+    .long .L_ALT_OP_UNUSED_72FF /* 0x172 */
+    .long .L_ALT_OP_UNUSED_73FF /* 0x173 */
+    .long .L_ALT_OP_UNUSED_74FF /* 0x174 */
+    .long .L_ALT_OP_UNUSED_75FF /* 0x175 */
+    .long .L_ALT_OP_UNUSED_76FF /* 0x176 */
+    .long .L_ALT_OP_UNUSED_77FF /* 0x177 */
+    .long .L_ALT_OP_UNUSED_78FF /* 0x178 */
+    .long .L_ALT_OP_UNUSED_79FF /* 0x179 */
+    .long .L_ALT_OP_UNUSED_7AFF /* 0x17a */
+    .long .L_ALT_OP_UNUSED_7BFF /* 0x17b */
+    .long .L_ALT_OP_UNUSED_7CFF /* 0x17c */
+    .long .L_ALT_OP_UNUSED_7DFF /* 0x17d */
+    .long .L_ALT_OP_UNUSED_7EFF /* 0x17e */
+    .long .L_ALT_OP_UNUSED_7FFF /* 0x17f */
+    .long .L_ALT_OP_UNUSED_80FF /* 0x180 */
+    .long .L_ALT_OP_UNUSED_81FF /* 0x181 */
+    .long .L_ALT_OP_UNUSED_82FF /* 0x182 */
+    .long .L_ALT_OP_UNUSED_83FF /* 0x183 */
+    .long .L_ALT_OP_UNUSED_84FF /* 0x184 */
+    .long .L_ALT_OP_UNUSED_85FF /* 0x185 */
+    .long .L_ALT_OP_UNUSED_86FF /* 0x186 */
+    .long .L_ALT_OP_UNUSED_87FF /* 0x187 */
+    .long .L_ALT_OP_UNUSED_88FF /* 0x188 */
+    .long .L_ALT_OP_UNUSED_89FF /* 0x189 */
+    .long .L_ALT_OP_UNUSED_8AFF /* 0x18a */
+    .long .L_ALT_OP_UNUSED_8BFF /* 0x18b */
+    .long .L_ALT_OP_UNUSED_8CFF /* 0x18c */
+    .long .L_ALT_OP_UNUSED_8DFF /* 0x18d */
+    .long .L_ALT_OP_UNUSED_8EFF /* 0x18e */
+    .long .L_ALT_OP_UNUSED_8FFF /* 0x18f */
+    .long .L_ALT_OP_UNUSED_90FF /* 0x190 */
+    .long .L_ALT_OP_UNUSED_91FF /* 0x191 */
+    .long .L_ALT_OP_UNUSED_92FF /* 0x192 */
+    .long .L_ALT_OP_UNUSED_93FF /* 0x193 */
+    .long .L_ALT_OP_UNUSED_94FF /* 0x194 */
+    .long .L_ALT_OP_UNUSED_95FF /* 0x195 */
+    .long .L_ALT_OP_UNUSED_96FF /* 0x196 */
+    .long .L_ALT_OP_UNUSED_97FF /* 0x197 */
+    .long .L_ALT_OP_UNUSED_98FF /* 0x198 */
+    .long .L_ALT_OP_UNUSED_99FF /* 0x199 */
+    .long .L_ALT_OP_UNUSED_9AFF /* 0x19a */
+    .long .L_ALT_OP_UNUSED_9BFF /* 0x19b */
+    .long .L_ALT_OP_UNUSED_9CFF /* 0x19c */
+    .long .L_ALT_OP_UNUSED_9DFF /* 0x19d */
+    .long .L_ALT_OP_UNUSED_9EFF /* 0x19e */
+    .long .L_ALT_OP_UNUSED_9FFF /* 0x19f */
+    .long .L_ALT_OP_UNUSED_A0FF /* 0x1a0 */
+    .long .L_ALT_OP_UNUSED_A1FF /* 0x1a1 */
+    .long .L_ALT_OP_UNUSED_A2FF /* 0x1a2 */
+    .long .L_ALT_OP_UNUSED_A3FF /* 0x1a3 */
+    .long .L_ALT_OP_UNUSED_A4FF /* 0x1a4 */
+    .long .L_ALT_OP_UNUSED_A5FF /* 0x1a5 */
+    .long .L_ALT_OP_UNUSED_A6FF /* 0x1a6 */
+    .long .L_ALT_OP_UNUSED_A7FF /* 0x1a7 */
+    .long .L_ALT_OP_UNUSED_A8FF /* 0x1a8 */
+    .long .L_ALT_OP_UNUSED_A9FF /* 0x1a9 */
+    .long .L_ALT_OP_UNUSED_AAFF /* 0x1aa */
+    .long .L_ALT_OP_UNUSED_ABFF /* 0x1ab */
+    .long .L_ALT_OP_UNUSED_ACFF /* 0x1ac */
+    .long .L_ALT_OP_UNUSED_ADFF /* 0x1ad */
+    .long .L_ALT_OP_UNUSED_AEFF /* 0x1ae */
+    .long .L_ALT_OP_UNUSED_AFFF /* 0x1af */
+    .long .L_ALT_OP_UNUSED_B0FF /* 0x1b0 */
+    .long .L_ALT_OP_UNUSED_B1FF /* 0x1b1 */
+    .long .L_ALT_OP_UNUSED_B2FF /* 0x1b2 */
+    .long .L_ALT_OP_UNUSED_B3FF /* 0x1b3 */
+    .long .L_ALT_OP_UNUSED_B4FF /* 0x1b4 */
+    .long .L_ALT_OP_UNUSED_B5FF /* 0x1b5 */
+    .long .L_ALT_OP_UNUSED_B6FF /* 0x1b6 */
+    .long .L_ALT_OP_UNUSED_B7FF /* 0x1b7 */
+    .long .L_ALT_OP_UNUSED_B8FF /* 0x1b8 */
+    .long .L_ALT_OP_UNUSED_B9FF /* 0x1b9 */
+    .long .L_ALT_OP_UNUSED_BAFF /* 0x1ba */
+    .long .L_ALT_OP_UNUSED_BBFF /* 0x1bb */
+    .long .L_ALT_OP_UNUSED_BCFF /* 0x1bc */
+    .long .L_ALT_OP_UNUSED_BDFF /* 0x1bd */
+    .long .L_ALT_OP_UNUSED_BEFF /* 0x1be */
+    .long .L_ALT_OP_UNUSED_BFFF /* 0x1bf */
+    .long .L_ALT_OP_UNUSED_C0FF /* 0x1c0 */
+    .long .L_ALT_OP_UNUSED_C1FF /* 0x1c1 */
+    .long .L_ALT_OP_UNUSED_C2FF /* 0x1c2 */
+    .long .L_ALT_OP_UNUSED_C3FF /* 0x1c3 */
+    .long .L_ALT_OP_UNUSED_C4FF /* 0x1c4 */
+    .long .L_ALT_OP_UNUSED_C5FF /* 0x1c5 */
+    .long .L_ALT_OP_UNUSED_C6FF /* 0x1c6 */
+    .long .L_ALT_OP_UNUSED_C7FF /* 0x1c7 */
+    .long .L_ALT_OP_UNUSED_C8FF /* 0x1c8 */
+    .long .L_ALT_OP_UNUSED_C9FF /* 0x1c9 */
+    .long .L_ALT_OP_UNUSED_CAFF /* 0x1ca */
+    .long .L_ALT_OP_UNUSED_CBFF /* 0x1cb */
+    .long .L_ALT_OP_UNUSED_CCFF /* 0x1cc */
+    .long .L_ALT_OP_UNUSED_CDFF /* 0x1cd */
+    .long .L_ALT_OP_UNUSED_CEFF /* 0x1ce */
+    .long .L_ALT_OP_UNUSED_CFFF /* 0x1cf */
+    .long .L_ALT_OP_UNUSED_D0FF /* 0x1d0 */
+    .long .L_ALT_OP_UNUSED_D1FF /* 0x1d1 */
+    .long .L_ALT_OP_UNUSED_D2FF /* 0x1d2 */
+    .long .L_ALT_OP_UNUSED_D3FF /* 0x1d3 */
+    .long .L_ALT_OP_UNUSED_D4FF /* 0x1d4 */
+    .long .L_ALT_OP_UNUSED_D5FF /* 0x1d5 */
+    .long .L_ALT_OP_UNUSED_D6FF /* 0x1d6 */
+    .long .L_ALT_OP_UNUSED_D7FF /* 0x1d7 */
+    .long .L_ALT_OP_UNUSED_D8FF /* 0x1d8 */
+    .long .L_ALT_OP_UNUSED_D9FF /* 0x1d9 */
+    .long .L_ALT_OP_UNUSED_DAFF /* 0x1da */
+    .long .L_ALT_OP_UNUSED_DBFF /* 0x1db */
+    .long .L_ALT_OP_UNUSED_DCFF /* 0x1dc */
+    .long .L_ALT_OP_UNUSED_DDFF /* 0x1dd */
+    .long .L_ALT_OP_UNUSED_DEFF /* 0x1de */
+    .long .L_ALT_OP_UNUSED_DFFF /* 0x1df */
+    .long .L_ALT_OP_UNUSED_E0FF /* 0x1e0 */
+    .long .L_ALT_OP_UNUSED_E1FF /* 0x1e1 */
+    .long .L_ALT_OP_UNUSED_E2FF /* 0x1e2 */
+    .long .L_ALT_OP_UNUSED_E3FF /* 0x1e3 */
+    .long .L_ALT_OP_UNUSED_E4FF /* 0x1e4 */
+    .long .L_ALT_OP_UNUSED_E5FF /* 0x1e5 */
+    .long .L_ALT_OP_UNUSED_E6FF /* 0x1e6 */
+    .long .L_ALT_OP_UNUSED_E7FF /* 0x1e7 */
+    .long .L_ALT_OP_UNUSED_E8FF /* 0x1e8 */
+    .long .L_ALT_OP_UNUSED_E9FF /* 0x1e9 */
+    .long .L_ALT_OP_UNUSED_EAFF /* 0x1ea */
+    .long .L_ALT_OP_UNUSED_EBFF /* 0x1eb */
+    .long .L_ALT_OP_UNUSED_ECFF /* 0x1ec */
+    .long .L_ALT_OP_UNUSED_EDFF /* 0x1ed */
+    .long .L_ALT_OP_UNUSED_EEFF /* 0x1ee */
+    .long .L_ALT_OP_UNUSED_EFFF /* 0x1ef */
+    .long .L_ALT_OP_UNUSED_F0FF /* 0x1f0 */
+    .long .L_ALT_OP_UNUSED_F1FF /* 0x1f1 */
+    .long .L_ALT_OP_INVOKE_OBJECT_INIT_JUMBO /* 0x1f2 */
+    .long .L_ALT_OP_IGET_VOLATILE_JUMBO /* 0x1f3 */
+    .long .L_ALT_OP_IGET_WIDE_VOLATILE_JUMBO /* 0x1f4 */
+    .long .L_ALT_OP_IGET_OBJECT_VOLATILE_JUMBO /* 0x1f5 */
+    .long .L_ALT_OP_IPUT_VOLATILE_JUMBO /* 0x1f6 */
+    .long .L_ALT_OP_IPUT_WIDE_VOLATILE_JUMBO /* 0x1f7 */
+    .long .L_ALT_OP_IPUT_OBJECT_VOLATILE_JUMBO /* 0x1f8 */
+    .long .L_ALT_OP_SGET_VOLATILE_JUMBO /* 0x1f9 */
+    .long .L_ALT_OP_SGET_WIDE_VOLATILE_JUMBO /* 0x1fa */
+    .long .L_ALT_OP_SGET_OBJECT_VOLATILE_JUMBO /* 0x1fb */
+    .long .L_ALT_OP_SPUT_VOLATILE_JUMBO /* 0x1fc */
+    .long .L_ALT_OP_SPUT_WIDE_VOLATILE_JUMBO /* 0x1fd */
+    .long .L_ALT_OP_SPUT_OBJECT_VOLATILE_JUMBO /* 0x1fe */
+    .long .L_ALT_OP_THROW_VERIFICATION_ERROR_JUMBO /* 0x1ff */
 /* File: x86/entry.S */
 /*
  * Copyright (C) 2008 The Android Open Source Project
@@ -15609,19 +25868,11 @@ dvmMterpStdRun:
     movl    offThread_curFrame(%ecx),rFP
     movl    offThread_curHandlerTable(%ecx),rIBASE
 
-    /* Remember %esp for future "longjmp" */
+/* Remember %esp for future "longjmp" */
     movl    %esp,offThread_bailPtr(%ecx)
 
-    /* Fetch next instruction before potential jump */
-    FETCH_INST
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE %ecx %eax
-    movl        $0, offThread_inJitCodeCache(%ecx)
-    cmpl        $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
-
    /* Normal case: start executing the instruction at rPC */
+    FETCH_INST
     GOTO_NEXT
 
     .global dvmMterpStdBail
@@ -15643,7 +25894,7 @@ dvmMterpStdRun:
 dvmMterpStdBail:
     movl    4(%esp),%ecx                 # grab self
     movl    8(%esp),%eax                 # changeInterp to return reg
-    movl    offThread_bailPtr(%ecx),%esp # Restore "setjmp" esp
+    movl    offThread_bailPtr(%ecx),%esp   # Restore "setjmp" esp
     movl    %esp,%ebp
     addl    $(FRAME_SIZE-4), %ebp       # Restore %ebp at point of setjmp
     movl    EDI_SPILL(%ebp),%edi
@@ -15653,18 +25904,6 @@ dvmMterpStdBail:
     pop     %ebp                         # restore caller's ebp
     ret                                  # return to dvmMterpStdRun's caller
 
-
-#ifdef WITH_JIT
-    .global     dvmNcgInvokeInterpreter
-    .type       dvmNcgInvokeInterpreter, %function
-/* input: start of method in %eax */
-dvmNcgInvokeInterpreter:
-    movl        %eax, rPC
-    movl   rSELF, %ecx
-    movl   offThread_curHandlerTable(%ecx),rIBASE
-    FETCH_INST_R %ecx                    # %edx<- opcode
-    GOTO_NEXT_R %ecx                    # start executing the instruction at rPC
-#endif
 
 /*
  * Strings
@@ -15712,14 +25951,12 @@ dvmNcgInvokeInterpreter:
  * the interpreter and code cache. rPC must be set on entry.
  */
 dvmJitToInterpPunt:
-    GET_PC
 #if defined(WITH_JIT_TUNING)
     movl   rPC, OUT_ARG0(%esp)
     call   dvmBumpPunt
 #endif
     movl   rSELF, %ecx
     movl   offThread_curHandlerTable(%ecx),rIBASE
-    movl        $0, offThread_inJitCodeCache(%ecx)
     FETCH_INST_R %ecx
     GOTO_NEXT_R %ecx
 
@@ -15754,23 +25991,19 @@ dvmJitToInterpSingleStep:
  */
 dvmJitToInterpNoChainNoProfile:
 #if defined(WITH_JIT_TUNING)
-    SPILL_TMP1(%eax)
     call   dvmBumpNoChain
-    UNSPILL_TMP1(%eax)
 #endif
-    movl   %eax, rPC
     movl   rSELF, %eax
     movl   rPC,OUT_ARG0(%esp)
     movl   %eax,OUT_ARG1(%esp)
-    call   dvmJitGetTraceAddrThread  # (pc, self)
+    call   dvmJitGetTraceAddrThread        # (pc, self)
     movl   rSELF,%ecx                # ecx <- self
     movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
     cmpl   $0, %eax
     jz     1f
-    jmp    *%eax                     # exec translation if we've got one
+    call   *%eax                     # exec translation if we've got one
     # won't return
 1:
-    EXPORT_PC
     movl   rSELF, %ecx
     movl   offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST_R %ecx
@@ -15778,26 +26011,23 @@ dvmJitToInterpNoChainNoProfile:
 
 /*
  * Return from the translation cache and immediately request a
- * translation from the exit target, but don't attempt to chain.
+ * translation fro the exit target, but don't attempt to chain.
  * rPC set on entry.
  */
     .global dvmJitToInterpTraceSelectNoChain
 dvmJitToInterpTraceSelectNoChain:
 #if defined(WITH_JIT_TUNING)
-    movl   %edx, OUT_ARG0(%esp)
     call   dvmBumpNoChain
 #endif
-    movl   %ebx, rPC
-    lea    4(%esp), %esp #to recover the esp update due to function call
     movl   rSELF, %eax
     movl   rPC,OUT_ARG0(%esp)
     movl   %eax,OUT_ARG1(%esp)
-    call   dvmJitGetTraceAddrThread  # (pc, self)
+    call   dvmJitGetTraceAddrThread # (pc, self)
     movl   rSELF,%ecx
     cmpl   $0,%eax
     movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
     jz     1f
-    jmp    *%eax              # jump to tranlation
+    call   *%eax              # jump to tranlation
     # won't return
 
 /* No Translation - request one */
@@ -15810,8 +26040,7 @@ dvmJitToInterpTraceSelectNoChain:
     FETCH_INST_R %ecx         # Continue interpreting if not
     GOTO_NEXT_R %ecx
 2:
-    ## Looks like an EXPORT_PC is needed here. Now jmp to common_selectTrace2
-    movl   $kJitTSelectRequestHot,%eax # ask for trace select
+    movl   $kJitTSelectRequestHot,rINST  # ask for trace select
     jmp    common_selectTrace
 
 /*
@@ -15821,32 +26050,21 @@ dvmJitToInterpTraceSelectNoChain:
  */
     .global dvmJitToInterpTraceSelect
 dvmJitToInterpTraceSelect:
-    movl   0(%esp), %eax          # get return address
-    movl   %ebx, rPC              # get first argument (target rPC)
-
-    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
-    ## doesn't use the calling conventions of header.S
-    lea    4(%esp), %esp #to recover the esp update due to function call
-
-    ## An additional 5B instruction "jump 0" was added for a thread-safe
-    ## chaining cell update in JIT code cache. So the offset is now -17=-12-5.
-    lea    -17(%eax), %ebx #$JIT_OFFSET_CHAIN_START(%eax), %ebx
-    lea    -4(%esp), %esp
+    pop    rINST           # save chain cell address in callee save reg
+    movl   (rINST),rPC
     movl   rSELF, %eax
     movl   rPC,OUT_ARG0(%esp)
     movl   %eax,OUT_ARG1(%esp)
     call   dvmJitGetTraceAddrThread # (pc, self)
-    lea    4(%esp), %esp
     cmpl   $0,%eax
-    movl   rSELF, %ecx
-    movl   %eax,offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
     jz     1b                 # no - ask for one
     movl   %eax,OUT_ARG0(%esp)
+# TODO - need to adjust rINST to beginning of sequence
     movl   rINST,OUT_ARG1(%esp)
     call   dvmJitChain        # Attempt dvmJitChain(codeAddr,chainAddr)
     cmpl   $0,%eax           # Success?
     jz     toInterpreter      # didn't chain - interpret
-    jmp    *%eax
+    call   *%eax
     # won't return
 
 /*
@@ -15854,214 +26072,95 @@ dvmJitToInterpTraceSelect:
  */
     .global dvmJitToInterpBackwardBranch
 dvmJitToInterpBackwardBranch:
-
-    .global     dvmJitToExceptionThrown
-dvmJitToExceptionThrown: //rPC in
-    movl   rSELF, %edx
-    GET_PC
-    movl   $0, offThread_inJitCodeCache(%edx)
-    jmp common_exceptionThrown
-
     .global dvmJitToInterpNormal
 dvmJitToInterpNormal:
-/* one input: the target rPC value */
-    movl        0(%esp), %eax          # get return address
-    movl        %ebx, rPC              # get first argument (target rPC)
-
-    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
-    ## doesn't use the calling conventions of header.S
-
-    ## An additional 5B instruction "jump 0" was added for a thread-safe
-    ## chaining cell update in JIT code cache. So the offset is now -17=-12-5.
-    lea         -17(%eax), %ebx #$JIT_OFFSET_CHAIN_START(%eax), %ebx
-    lea         4(%esp), %esp
-    movl        rPC, OUT_ARG0(%esp)
-    movl        rSELF, %ecx
-    movl        %ecx, OUT_ARG1(%esp)
-    call        dvmJitGetTraceAddrThread
-    ## Here is the change from using rGLUE to rSELF for accessing the
-    ## JIT code cache flag
-    movl        rSELF, %ecx
-    movl        %eax, offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
-    #lea         4(%esp), %esp
-    cmp         $0, %eax
-    je          toInterpreter
-    #lea         -8(%esp), %esp
-    movl        %ebx, OUT_ARG1(%esp)    # %ebx live thorugh dvmJitGetTraceAddrThread
-    movl        %eax, OUT_ARG0(%esp)    # first argument
-    call        dvmJitChain
-    #lea         8(%esp), %esp
-    cmp         $0, %eax
-    je          toInterpreter
-    jmp         *%eax                   #to native address
-
     .global dvmJitToInterpNoChain
 dvmJitToInterpNoChain:
-dvmJitToInterpNoChain: #rPC in eax
-#if defined(WITH_JIT_TUNING)
-    SPILL_TMP1(%eax)
-    call   dvmBumpNoChain
-    UNSPILL_TMP1(%eax)
-#endif
-    ## TODO, need to clean up stack manipulation ... this isn't signal safe and
-    ## doesn't use the calling conventions of header.S
-    movl        %eax, rPC
-    movl        rPC, OUT_ARG0(%esp)
-    movl        rSELF, %ecx
-    movl        %ecx, OUT_ARG1(%esp)
-    call        dvmJitGetTraceAddrThread
-    ## Here is the change from using rGLUE to rSELF for accessing the
-    ## JIT code cache flag
-    movl        rSELF, %ecx
-    movl        %eax, offThread_inJitCodeCache(%ecx)  # set inJitCodeCache flag
-    cmp         $0, %eax
-    je          toInterpreter
-    jmp         *%eax                   #to native address
-
 toInterpreter:
-    EXPORT_PC
-    movl        rSELF, %ecx
-    movl        offThread_curHandlerTable(%ecx), rIBASE
-    FETCH_INST
-    movl        offThread_pJitProfTable(%ecx), %eax
-    #Fallthrough
-
-/* ebx holds the pointer to the jit profile table
-   edx has the opCode */
-common_testUpdateProfile:
-    cmp         $0, %eax
-    je          4f
-/* eax holds the pointer to the jit profile table
-   edx has the opCode
-   rPC points to the next bytecode */
+    jmp  common_abort
 
 common_updateProfile:
     # quick & dirty hash
-    movl   rPC, %ecx
-    shrl   $12, %ecx
-    xorl   rPC, %ecx
-    andl   $((1<<JIT_PROF_SIZE_LOG_2)-1), %ecx
-    decb   (%ecx,%eax)
-    #jmp    1f # remove
+    movl   rPC, %eax
+    shrl   $12, %eax
+    xorl   rPC, %eax
+    andl   $((1<<JIT_PROF_SIZE_LOG_2)-1),%eax
+    decb   (%edx,%eax)
     jz     2f
 1:
     GOTO_NEXT
 2:
-common_Profile:
 /*
  * Here, we switch to the debug interpreter to request
  * trace selection.  First, though, check to see if there
  * is already a native translation in place (and, if so,
  * jump to it now.
  */
-    SPILL(rIBASE)
-    SPILL_TMP1(rINST)
-    movl        rSELF, rIBASE
-    GET_JIT_THRESHOLD rIBASE rINST  # leaves rSELF in %ecx
+    GET_JIT_THRESHOLD %ecx rINST  # leaves rSELF in %ecx
     EXPORT_PC
-    movb   rINSTbl,(%ecx,%eax)   # reset counter
-    movl   rIBASE,rINST            # preserve rSELF
+    movb   rINSTbl,(%edx,%eax)   # reset counter
+    movl   %ecx,rINST            # preserve rSELF
     movl   rSELF, %eax
     movl   rPC,OUT_ARG0(%esp)
-    movl   rIBASE,OUT_ARG1(%esp)
-    call   dvmJitGetTraceAddrThread  # (pc, self)
-    UNSPILL(rIBASE)
+    movl   %eax,OUT_ARG1(%esp)
+    call   dvmJitGetTraceAddr  # (pc, self)
     movl   %eax,offThread_inJitCodeCache(rINST)   # set the inJitCodeCache flag
-    UNSPILL_TMP1(rINST)
     cmpl   $0,%eax
-    #jmp    1f # remove
     jz     1f
-    jmp   *%eax        # TODO: decide call vs/ jmp!.  No return either way
+    call   *%eax        # TODO: decide call vs/ jmp!.  No return either way
 1:
     movl   $kJitTSelectRequest,%eax
     # On entry, eax<- jitState, rPC valid
 common_selectTrace:
-    mov         %ebx, EBX_SPILL(%ebp)
-    movl        rSELF, %ebx
-    movzwl      offThread_subMode(%ebx), %ecx
-    and         $(kSubModeJitTraceBuild | kSubModeJitSV), %ecx
-    jne         3f                     # already doing JIT work, continue
-    movl        %eax, offThread_jitState(%ebx)
-    movl        rSELF, %eax
-    movl       %eax, OUT_ARG0(%esp)
-
-/*
- * Call out to validate trace-building request. If successful, rIBASE will be swapped
- * to send us into single-steppign trace building mode, so we need to refresh before
- * we continue.
- */
-
-   EXPORT_PC
-   SAVE_PC_FP_TO_SELF %ecx
-   call dvmJitCheckTraceRequest
-3:
-   mov          EBX_SPILL(%ebp), %ebx
-   FETCH_INST
-   movl rSELF, %ecx
-   movl offThread_curHandlerTable(%ecx), rIBASE
-4:
-   GOTO_NEXT
-
-common_selectTrace2:
-    mov         %ebx, EBX_SPILL(%ebp)
-    movl        rSELF, %ebx
-    movl        %ebx, OUT_ARG0(%esp)
-    movl        %eax, offThread_jitState(%ebx)
-    movzwl      offThread_subMode(%ebx), %ecx
-    mov         EBX_SPILL(%ebp), %ebx
-    and         (kSubModeJitTraceBuild | kSubModeJitSV), %ecx
-    jne         3f                     # already doing JIT work, continue
-
-
-
-/*
- * Call out to validate trace-building request. If successful, rIBASE will be swapped
- * to send us into single-steppign trace building mode, so we need to refresh before
- * we continue.
- */
-
-   EXPORT_PC
-   SAVE_PC_FP_TO_SELF %ecx
-   call dvmJitCheckTraceRequest
-3:
-   FETCH_INST
-   movl rSELF, %ecx
-   movl offThread_curHandlerTable(%ecx), rIBASE
-4:
-   GOTO_NEXT
-
+/* TODO */
+    call   dvmAbort
+#if 0
+    movl   rSELF,%ecx
+    movl   %eax,offThread_jitState(%ecx)
+    movl   $kInterpEntryInstr,offThread_entryPoint(%ecx)
+    movl   $1,rINST
+    jmp    common_gotoBail
+#endif
 #endif
 
+
+
 /*
- * For the invoke codes we need to know what register holds the "this" pointer. However
- * it seems the this pointer is assigned consistently most times it is in %ecx but other
- * times it is in OP_INVOKE_INTERFACE, OP_INVOKE_SUPER_QUICK, or OP_INVOKE_VIRTUAL_QUICK.
-*/
+ * Common code for jumbo method invocation.
+ *
+ * On entry:
+ *   eax = Method* methodToCall
+ *   rINSTw trashed, must reload
+ *   rIBASE trashed, must reload before resuming interpreter
+ */
+
+common_invokeMethodJumbo:
+.LinvokeNewJumbo:
+
+   /*
+    * prepare to copy args to "outs" area of current frame
+    */
+    movzwl      6(rPC),rINST            # rINST<- BBBB
+    movzwl      8(rPC), %ecx            # %ecx<- CCCC
+    ADVANCE_PC 2                        # adjust pc to make return similar
+    SAVEAREA_FROM_FP %edx               # %edx<- &StackSaveArea
+    test        rINST, rINST
+    movl        rINST, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- BBBB
+    jz          .LinvokeArgsDone        # no args; jump to args done
+    jmp         .LinvokeRangeArgs       # handle args like invoke range
 
 /*
  * Common code for method invocation with range.
  *
  * On entry:
  *   eax = Method* methodToCall
- *   ecx = "this"
  *   rINSTw trashed, must reload
  *   rIBASE trashed, must reload before resuming interpreter
  */
 
 common_invokeMethodRange:
 .LinvokeNewRange:
-#if defined(WITH_JIT)
-    SPILL_TMP1(%edx)
-    SPILL_TMP2(%ebx)
-    movl        rSELF, %edx
-    movzwl      offThread_subMode(%edx), %ebx
-    and         $kSubModeJitTraceBuild, %ebx
-    jz          6f
-    call        save_callsiteinfo
-6:
-    UNSPILL_TMP2(%ebx)
-    UNSPILL_TMP1(%edx)
-#endif
+
    /*
     * prepare to copy args to "outs" area of current frame
     */
@@ -16103,18 +26202,6 @@ common_invokeMethodRange:
     */
 
 common_invokeMethodNoRange:
-#if defined(WITH_JIT)
-    SPILL_TMP1(%edx)
-    SPILL_TMP2(%ebx)
-    movl        rSELF, %edx
-    movzwl      offThread_subMode(%edx), %ebx
-    and         $kSubModeJitTraceBuild, %ebx
-    jz          6f
-    call        save_callsiteinfo
-6:
-    UNSPILL_TMP2(%ebx)
-    UNSPILL_TMP1(%edx)
-#endif
 .LinvokeNewNoRange:
     movzbl      1(rPC),rINST       # rINST<- BA
     movl        rINST, LOCAL0_OFFSET(%ebp) # LOCAL0_OFFSET(%ebp)<- BA
@@ -16202,9 +26289,6 @@ common_invokeMethodNoRange:
     movl        rSELF,%ecx              # %ecx<- pthread
     movl        rFP, offStackSaveArea_prevFrame(%edx) # newSaveArea->prevFrame<- rFP
     movl        rPC, offStackSaveArea_savedPc(%edx) # newSaveArea->savedPc<- rPC
-#if defined(WITH_JIT)
-    movl        $0, offStackSaveArea_returnAddr(%edx)
-#endif
 
     /* Any special actions to take? */
     cmpw        $0, offThread_subMode(%ecx)
@@ -16228,12 +26312,6 @@ common_invokeMethodNoRange:
     movl        rFP, offThread_curFrame(%ecx) # curFrame<-newFP
     movl        offThread_curHandlerTable(%ecx),rIBASE
     FETCH_INST
-#if defined(WITH_JIT)
-    /* rPC is already updated */
-    GET_JIT_PROF_TABLE %ecx %eax
-    cmp         $0, %eax
-    jne         common_updateProfile # set up %ebx & %edx & rPC
-#endif
     GOTO_NEXT                           # jump to methodToCall->insns
 
 2:
@@ -16293,10 +26371,10 @@ common_invokeMethodNoRange:
      */
     SPILL_TMP1(%eax)                    # save methodTocall
     movl        rPC, offThread_pc(%ecx)
-    movl        %ecx, OUT_ARG1(%esp)
-    movl        %eax, OUT_ARG0(%esp)
+    movl        %ecx, OUT_ARG0(%esp)
+    movl        %eax, OUT_ARG1(%esp)
     movl        rFP, OUT_ARG2(%esp)
-    call        dvmReportPreNativeInvoke # (methodToCall, self, fp)
+    call        dvmReportPreNativeInvoke # (self, methodToCall, fp)
     UNSPILL_TMP1(%eax)                  # restore methodToCall
     movl        rSELF,%ecx              # restore self
 
@@ -16310,10 +26388,10 @@ common_invokeMethodNoRange:
 
     UNSPILL_TMP1(%eax)                  # restore methodToCall
     movl        rSELF, %ecx
-    movl        %ecx, OUT_ARG1(%esp)
-    movl        %eax, OUT_ARG0(%esp)
+    movl        %ecx, OUT_ARG0(%esp)
+    movl        %eax, OUT_ARG1(%esp)
     movl        rFP, OUT_ARG2(%esp)
-    call        dvmReportPostNativeInvoke # (methodToCall, self, fp)
+    call        dvmReportPostNativeInvoke # (self, methodToCall, fp)
     jmp         7b                      # rejoin
 
 .LstackOverflow:    # eax=methodToCall
@@ -16328,68 +26406,36 @@ common_invokeMethodNoRange:
  * Common code for handling a return instruction
  */
 common_returnFromMethod:
-    movl    rSELF, %ecx
-    SAVEAREA_FROM_FP %eax                       # %eax<- saveArea(old)
+    movl    rSELF,%ecx
+    SAVEAREA_FROM_FP %eax                         # eax<- saveArea (old)
     cmpw    $0, offThread_subMode(%ecx)          # special action needed?
     jne     19f                                   # go if so
 14:
+    movl    offStackSaveArea_prevFrame(%eax),rFP  # rFP<- prevFrame
+    movl    (offStackSaveArea_method-sizeofStackSaveArea)(rFP),rINST
+    cmpl    $0,rINST                             # break?
+    je      common_gotoBail    # break frame, bail out completely
 
-    movl        offStackSaveArea_prevFrame(%eax), rFP # rFP<- saveArea->PrevFrame
-    movl        (offStackSaveArea_method - sizeofStackSaveArea)(rFP), rINST # rINST<- method we are returning to
-    cmpl        $0, rINST               # check for break frame
-    je          common_gotoBail         # bail if break frame
-    movl        offThread_curHandlerTable(%ecx),rIBASE
-    movl        offStackSaveArea_savedPc(%eax), rPC # rPC<- saveAreaOld->savedPc
-#if defined(WITH_JIT)
-    movl        offStackSaveArea_returnAddr(%eax), %ecx
-#endif
-    movl        rSELF, %eax
-    movl        rINST, offThread_method(%eax) # glue->method<- newSave->method
-    movl        offMethod_clazz(rINST), rINST # rINST<- method->clazz
-    movl        rFP, offThread_curFrame(%eax) # glue->self->curFrame<- rFP
-#if defined(WITH_JIT)
-    //update self->offThread_inJitCodeCache
-    movl        %ecx, offThread_inJitCodeCache(%eax)
-#endif
-    movl        offClassObject_pDvmDex(rINST), rINST # rINST<- method->clazz->pDvmDex
-    movl        rINST, offThread_methodClassDex(%eax) # glue->pDvmDex<- method->clazz->pDvmDex
-#if defined(WITH_JIT)
-    cmp         $0, %ecx
-    je          .returnToBC
-    movl        %ecx, %eax
-    jmp         *%eax
-#endif
-
-.returnToBC:
-
-#if defined(WITH_JIT)
-    FETCH_INST_OPCODE  3, %ecx                 # %eax<- next instruction hi; fetch, advance
-    // %ecx has the opcode
-    addl         $6, rPC               # 3*2 = 6
-    SPILL_TMP1   (%ecx)
-    movl         rSELF, %ecx
-    FETCH_INST
-    UNSPILL_TMP1   (%ecx)
-    movzbl      1(rPC), rINST
-    jmp     *(rIBASE,%ecx,4)
-#else
-    FETCH_INST_WORD 3
+    movl    offStackSaveArea_savedPc(%eax),rPC # pc<- saveArea->savedPC
+    movl    rINST,offThread_method(%ecx)       # self->method = newSave->meethod
+    movl    rFP,offThread_curFrame(%ecx)       # curFrame = fp
+    movl    offMethod_clazz(rINST),%eax        # eax<- method->clazz
+    movl    offThread_curHandlerTable(%ecx),rIBASE
+    movl    offClassObject_pDvmDex(%eax),rINST # rINST<- method->clazz->pDvmDex
+    FETCH_INST_OPCODE 3 %eax
+    movl    rINST,offThread_methodClassDex(%ecx)
     ADVANCE_PC 3
-    GOTO_NEXT
-#endif
+    GOTO_NEXT_R %eax
 
 19:
     /*
      * Handle special subMode actions
      * On entry, rFP: prevFP, %ecx: self, %eax: saveArea
      */
-    SPILL_TMP1(%ebx)
-    movl     offStackSaveArea_prevFrame(%eax), %ebx # %ebx<- saveArea->PrevFrame
+    movl     rFP, offThread_curFrame(%ecx)    # update interpSave.curFrame
     movl     rPC, offThread_pc(%ecx)          # update interpSave.pc
-    movl     %ebx, offThread_curFrame(%ecx)    # update interpSave.curFrame
     movl     %ecx, OUT_ARG0(%esp)             # parameter self
     call     dvmReportReturn                  # (self)
-    UNSPILL_TMP1(%ebx)
     movl     rSELF, %ecx                      # restore self
     SAVEAREA_FROM_FP %eax                     # restore saveArea
     jmp      14b
@@ -16412,74 +26458,12 @@ common_gotoBail:
     movl   rINST,OUT_ARG1(%esp)     # changeInterp in arg1
     call   dvmMterpStdBail          # bail out....
 
-/*
- * The JIT's invoke method needs to remember the callsite class and
- * target pair.  Save them here so that they are available to
- * dvmCheckJit following the interpretation of this invoke.
- *
- * eax = Method* methodToCall
- * ecx = "this"
- * edx = rSELF
- * ebx = free to use
- */
-#if defined(WITH_JIT)
-save_callsiteinfo:
-    cmp     $0, %ecx
-    je      2f
-    movl    offObject_clazz(%ecx), %ecx
-2:
-    movl    rSELF, %ebx
-    movl    %eax, offThread_methodToCall(%ebx)
-    movl    %ecx, offThread_callsiteClass(%ebx)
-    ret
-#endif
-
-#if defined(WITH_JIT)
-
-    /*
-     * If the JIT is actively building a trace we need to make sure
-     * that the field is fully resolved before including the current
-     * instruction.
-     *
-     * On entry:
-     *     %ecx: &dvmDex->pResFields[field]
-     *     %eax:  field pointer (must preserve)
-     */
-common_verifyField:
-    movl    %ebx, TMP_SPILL1(%ebp)
-    movl     rSELF, %ebx
-    movzwl   offThread_subMode(%ebx), %ebx
-    andl     $kSubModeJitTraceBuild, %ebx
-    movl    TMP_SPILL1(%ebp), %ebx
-    jne      1f
-    ret
-1:
-    movl    (%ecx), %ecx
-    cmp     $0, %ecx
-    je      1f
-    ret
-1:
-    SPILL_TMP1(%eax)
-    SPILL_TMP2(%edx)
-    movl     rSELF, %ecx
-    # Because we call into this helper from a bytecode, we have
-    # to be careful not to write over the return address when using
-    # the OUT_ARG macros
-    lea      -8(%esp), %esp
-    movl     %ecx, OUT_ARG0(%esp)
-    movl     rPC, OUT_ARG1(%esp)
-    call     dvmJitEndTraceSelect
-    lea      8(%esp), %esp
-    UNSPILL_TMP2(%edx)
-    UNSPILL_TMP1(%eax)
-    ret
-#endif
 
 /*
  * After returning from a "selfd" function, pull out the updated values
  * and start executing at the next instruction.
  */
-common_resumeAfterGlueCall:
+ common_resumeAfterGlueCall:
      movl  rSELF, %eax
      movl  offThread_pc(%eax),rPC
      movl  offThread_curFrame(%eax),rFP
@@ -16512,6 +26496,7 @@ common_errNegativeArraySize:
  * On entry, method name in eax
  */
 common_errNoSuchMethod:
+
     EXPORT_PC
     movl    %eax,OUT_ARG0(%esp)
     call    dvmThrowNoSuchMethodError
@@ -16554,131 +26539,12 @@ common_errArrayIndex:
  * This does not return.
  */
 common_exceptionThrown:
-.LexceptionNew:
-
-    EXPORT_PC
-    movl       rSELF, %ecx
-    movl       %ecx, OUT_ARG0(%esp)
-    call       dvmCheckSuspendPending
-
-    movl       rSELF, %ecx
-    movl       offThread_exception(%ecx), %edx   # %edx <- self->exception
-    movl       %edx, OUT_ARG0(%esp)
-    movl       %ecx, OUT_ARG1(%esp)
-    SPILL_TMP1(%edx)
-    call       dvmAddTrackedAlloc      # don't let the exception be GCed
-    UNSPILL_TMP1(%edx)
-    movl       rSELF, %ecx
-    movl       offThread_subMode(%ecx), %eax    # get subMode flags
-    movl       $0, offThread_exception(%ecx)
-
-    # Special subMode?
-    cmpl       $0, %eax                # any special subMode handling needed?
-    je         8f                      # go if so
-
-    # Manage debugger bookkeeping
-    movl       rPC, offThread_pc(%ecx) # update interpSave.pc
-    movl       rFP, offThread_curFrame(%ecx) # update interpSave.curFrame
-    movl       %ecx, OUT_ARG0(%esp)
-    movl       %edx, OUT_ARG1(%esp)
-    SPILL_TMP1(%edx)
-    call       dvmReportExceptionThrow # (self, exception)
-    UNSPILL_TMP1(%edx)
-    movl       rSELF, %ecx
-
-8:
-    /*
-    * set up args and a local for &fp
-    */
-    lea        20(%esp), %esp          # raise %esp
-    movl       rFP, (%esp)               # save fp
-    movl       %esp, %eax              # %eax = &fp
-    lea        -20(%esp), %esp         # reset %esp
-    movl       %eax, OUT_ARG4(%esp)    # Arg 4 = &fp
-    movl       $0, OUT_ARG3(%esp)      # Arg 3 = false
-    movl       %edx, OUT_ARG2(%esp)    # Arg 2 = exception
-    movl       %ecx, OUT_ARG0(%esp)    # Arg 0 = self
-
-    movl       offThread_method(%ecx), %eax # %eax = self->method
-    movl       offMethod_insns(%eax), %eax  # %eax = self->method->insn
-    movl       rPC, %ecx
-    subl       %eax, %ecx              # %ecx = pc - self->method->insn
-    sar        $1, %ecx                # adjust %ecx for code offset
-    movl       %ecx, OUT_ARG1(%esp)    # Arg 1 = %ecx
-
-    /* call, %eax gets catchRelPc (a code-unit offset) */
-    SPILL_TMP1(%edx)                   # save exception
-    call       dvmFindCatchBlock       # call(self, relPc, exc, scan?, &fp)
-    UNSPILL_TMP1(%edx)                 # restore exception
-
-    /* fix earlier stack overflow if necessary; may trash rFP */
-    movl       rSELF, %ecx
-    cmpl       $0, offThread_stackOverflowed(%ecx) # did we overflow?
-    je         1f                         # no, skip ahead
-    movl       %eax, rFP                  # save relPc result in rFP
-    movl       %ecx, OUT_ARG0(%esp)       # Arg 0 = self
-    movl       %edx, OUT_ARG1(%esp)       # Arg 1 = exception
-    SPILL_TMP1(%edx)
-    call       dvmCleanupStackOverflow    # call(self, exception)
-    UNSPILL_TMP1(%edx)
-    movl       rFP, %eax                  # restore result
-    movl       rSELF, %ecx
-1:
-
-    /* update frame pointer and check result from dvmFindCatchBlock */
-    movl       20(%esp), rFP              # retrieve the updated rFP
-    cmpl       $0, %eax                  # is catchRelPc < 0?
-    jl         .LnotCaughtLocally
-
-    /* adjust locals to match self->interpSave.curFrame and updated PC */
-    SAVEAREA_FROM_FP rINST             # rINST<- new save area
-    movl       offStackSaveArea_method(rINST), rINST # rINST<- new method
-    movl       rINST, offThread_method(%ecx)         # self->method = new method
-    movl       offMethod_clazz(rINST), %ecx          # %ecx = method->clazz
-    movl       offMethod_insns(rINST), rINST         # rINST = method->insn
-    movl       offClassObject_pDvmDex(%ecx), %ecx    # %ecx = method->clazz->pDvmDex
-    lea        (rINST, %eax, 2), rPC      # rPC<- method->insns + catchRelPc
-    movl       rSELF, rINST
-    movl       %ecx, offThread_methodClassDex(rINST) # self->pDvmDex = method->clazz->pDvmDex
-
-    /* release the tracked alloc on the exception */
-    movl       %edx, OUT_ARG0(%esp)       # Arg 0 = exception
-    movl       rINST, OUT_ARG1(%esp)      # Arg 1 = self
-    SPILL_TMP1(%edx)
-    call       dvmReleaseTrackedAlloc     # release the exception
-    UNSPILL_TMP1(%edx)
-
-    /* restore the exception if the handler wants it */
-    movl       rSELF, %ecx
-    FETCH_INST
-    movzbl     rINSTbl, %eax
-    cmpl       $OP_MOVE_EXCEPTION, %eax   # is it "move-exception"?
-    jne        1f
-    movl       %edx, offThread_exception(%ecx) # restore exception
-1:
-    movl       offThread_curHandlerTable(%ecx), rIBASE # refresh rIBASE
-    GOTO_NEXT
-
-.LnotCaughtLocally: # %edx = exception
-    /* fix stack overflow if necessary */
-    movl       rSELF, %ecx
-    movl       offThread_stackOverflowed(%ecx), %eax
-    cmpl       $0, %eax                   # did we overflow earlier?
-    je         1f
-    movl       %ecx, OUT_ARG0(%esp)
-    movl       %edx, OUT_ARG1(%esp)
-    SPILL_TMP1(%edx)
-    call       dvmCleanupStackOverflow
-    UNSPILL_TMP1(%edx)
-
-1:
-    movl       rSELF, %ecx
-    movl       %edx, offThread_exception(%ecx) #restore exception
-    movl       %edx, OUT_ARG0(%esp)
-    movl       %ecx, OUT_ARG1(%esp)
-    call       dvmReleaseTrackedAlloc     # release the exception
-    movl       rSELF, %ecx
-    jmp        common_gotoBail            # bail out
+    movl    rSELF,%ecx
+    movl    rPC,offThread_pc(%ecx)
+    movl    rFP,offThread_curFrame(%ecx)
+    movl    %ecx,OUT_ARG0(%esp)
+    call    dvmMterp_exceptionThrown
+    jmp     common_resumeAfterGlueCall
 
 common_abort:
     movl    $0xdeadf00d,%eax

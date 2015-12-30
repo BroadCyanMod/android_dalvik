@@ -34,7 +34,7 @@ bool dvmHeapBitmapInit(HeapBitmap *hb, const void *base, size_t maxSize,
     bitsLen = HB_OFFSET_TO_INDEX(maxSize) * sizeof(*hb->bits);
     bits = dvmAllocRegion(bitsLen, PROT_READ | PROT_WRITE, name);
     if (bits == NULL) {
-        ALOGE("Could not mmap %zd-byte ashmem region '%s'", bitsLen, name);
+        LOGE("Could not mmap %zd-byte ashmem region '%s'", bitsLen, name);
         return false;
     }
     hb->bits = (unsigned long *)bits;

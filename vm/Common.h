@@ -45,7 +45,7 @@
 #if !defined(NDEBUG) && defined(WITH_DALVIK_ASSERT)
 # undef assert
 # define assert(x) \
-    ((x) ? ((void)0) : (ALOGE("ASSERT FAILED (%s:%d): %s", \
+    ((x) ? ((void)0) : (LOGE("ASSERT FAILED (%s:%d): %s", \
         __FILE__, __LINE__, #x), *(int*)39=39, (void)0) )
 #endif
 
@@ -63,7 +63,7 @@
 #define CLZ(x) __builtin_clz(x)
 
 /*
- * If "very verbose" logging is enabled, make it equivalent to ALOGV.
+ * If "very verbose" logging is enabled, make it equivalent to LOGV.
  * Otherwise, make it disappear.
  *
  * Define this above the #include "Dalvik.h" to enable for only a
@@ -71,8 +71,8 @@
  */
 /* #define VERY_VERBOSE_LOG */
 #if defined(VERY_VERBOSE_LOG)
-# define LOGVV      ALOGV
-# define IF_LOGVV() IF_ALOGV()
+# define LOGVV      LOGV
+# define IF_LOGVV() IF_LOGV()
 #else
 # define LOGVV(...) ((void)0)
 # define IF_LOGVV() if (false)
@@ -102,7 +102,6 @@ typedef int64_t             s8;
 struct Object;
 
 union JValue {
-#if defined(HAVE_LITTLE_ENDIAN)
     u1      z;
     s1      b;
     u2      c;
@@ -112,30 +111,6 @@ union JValue {
     float   f;
     double  d;
     Object* l;
-#endif
-#if defined(HAVE_BIG_ENDIAN)
-    struct {
-        u1    _z[3];
-        u1    z;
-    };
-    struct {
-        s1    _b[3];
-        s1    b;
-    };
-    struct {
-        u2    _c;
-        u2    c;
-    };
-    struct {
-        s2    _s;
-        s2    s;
-    };
-    s4      i;
-    s8      j;
-    float   f;
-    double  d;
-    void*   l;
-#endif
 };
 
 #define OFFSETOF_MEMBER(t, f)         \

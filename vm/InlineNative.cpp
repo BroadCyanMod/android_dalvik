@@ -136,7 +136,7 @@ bool javaLangString_charAt(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
         return false;
     }
 
-    //ALOGI("String.charAt this=0x%08x index=%d", arg0, arg1);
+    //LOGI("String.charAt this=0x%08x index=%d", arg0, arg1);
     count = dvmGetFieldInt((Object*) arg0, STRING_FIELDOFF_COUNT);
     if ((s4) arg1 < 0 || (s4) arg1 >= count) {
         dvmThrowStringIndexOutOfBoundsExceptionWithIndex(count, arg1);
@@ -180,9 +180,9 @@ static void badMatch(StringObject* thisStrObj, StringObject* compStrObj,
     thisStr = dvmCreateCstrFromString(thisStrObj);
     compStr = dvmCreateCstrFromString(compStrObj);
 
-    ALOGE("%s expected %d got %d", compareType, expectResult, newResult);
-    ALOGE(" this (o=%d l=%d) '%s'", thisOffset, thisCount, thisStr);
-    ALOGE(" comp (o=%d l=%d) '%s'", compOffset, compCount, compStr);
+    LOGE("%s expected %d got %d", compareType, expectResult, newResult);
+    LOGE(" this (o=%d l=%d) '%s'", thisOffset, thisCount, thisStr);
+    LOGE(" comp (o=%d l=%d) '%s'", compOffset, compCount, compStr);
     dvmPrintHexDumpEx(ANDROID_LOG_INFO, LOG_TAG,
         ((const u2*) thisArray->contents) + thisOffset, thisCount*2,
         kHexDumpLocal);
@@ -403,7 +403,7 @@ bool javaLangString_equals(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
 bool javaLangString_length(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
     JValue* pResult)
 {
-    //ALOGI("String.length this=0x%08x pResult=%p", arg0, pResult);
+    //LOGI("String.length this=0x%08x pResult=%p", arg0, pResult);
 
     /* null reference check on "this" */
     if ((Object*) arg0 == NULL) {
@@ -421,7 +421,7 @@ bool javaLangString_length(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
 bool javaLangString_isEmpty(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
     JValue* pResult)
 {
-    //ALOGI("String.isEmpty this=0x%08x pResult=%p", arg0, pResult);
+    //LOGI("String.isEmpty this=0x%08x pResult=%p", arg0, pResult);
 
     /* null reference check on "this" */
     if ((Object*) arg0 == NULL) {
@@ -455,7 +455,7 @@ static inline int indexOfCommon(Object* strObj, int ch, int start)
     const u2* chars = (const u2*)(void*)charArray->contents;
     int offset = dvmGetFieldInt(strObj, STRING_FIELDOFF_OFFSET);
     int count = dvmGetFieldInt(strObj, STRING_FIELDOFF_COUNT);
-    //ALOGI("String.indexOf(0x%08x, 0x%04x, %d) off=%d count=%d",
+    //LOGI("String.indexOf(0x%08x, 0x%04x, %d) off=%d count=%d",
     //    (u4) strObj, ch, start, offset, count);
 
     /* factor out the offset */
@@ -463,8 +463,6 @@ static inline int indexOfCommon(Object* strObj, int ch, int start)
 
     if (start < 0)
         start = 0;
-    else if (start > count)
-        start = count;
 
 #if 0
     /* 16-bit loop, simple */
@@ -732,41 +730,51 @@ const InlineOperation gDvmInlineOpsTable[] = {
         "Lorg/apache/harmony/dalvik/NativeTestTarget;",
         "emptyInlineMethod", "()V" },
 
-    { javaLangString_charAt, "Ljava/lang/String;", "charAt", "(I)C" },
-    { javaLangString_compareTo, "Ljava/lang/String;", "compareTo", "(Ljava/lang/String;)I" },
-    { javaLangString_equals, "Ljava/lang/String;", "equals", "(Ljava/lang/Object;)Z" },
-    { javaLangString_fastIndexOf_II, "Ljava/lang/String;", "fastIndexOf", "(II)I" },
-    { javaLangString_isEmpty, "Ljava/lang/String;", "isEmpty", "()Z" },
-    { javaLangString_length, "Ljava/lang/String;", "length", "()I" },
+    { javaLangString_charAt,
+        "Ljava/lang/String;", "charAt", "(I)C" },
+    { javaLangString_compareTo,
+        "Ljava/lang/String;", "compareTo", "(Ljava/lang/String;)I" },
+    { javaLangString_equals,
+        "Ljava/lang/String;", "equals", "(Ljava/lang/Object;)Z" },
+    { javaLangString_fastIndexOf_II,
+        "Ljava/lang/String;", "fastIndexOf", "(II)I" },
+    { javaLangString_isEmpty,
+        "Ljava/lang/String;", "isEmpty", "()Z" },
+    { javaLangString_length,
+        "Ljava/lang/String;", "length", "()I" },
 
-    { javaLangMath_abs_int, "Ljava/lang/Math;", "abs", "(I)I" },
-    { javaLangMath_abs_long, "Ljava/lang/Math;", "abs", "(J)J" },
-    { javaLangMath_abs_float, "Ljava/lang/Math;", "abs", "(F)F" },
-    { javaLangMath_abs_double, "Ljava/lang/Math;", "abs", "(D)D" },
-    { javaLangMath_min_int, "Ljava/lang/Math;", "min", "(II)I" },
-    { javaLangMath_max_int, "Ljava/lang/Math;", "max", "(II)I" },
-    { javaLangMath_sqrt, "Ljava/lang/Math;", "sqrt", "(D)D" },
-    { javaLangMath_cos, "Ljava/lang/Math;", "cos", "(D)D" },
-    { javaLangMath_sin, "Ljava/lang/Math;", "sin", "(D)D" },
+    { javaLangMath_abs_int,
+        "Ljava/lang/Math;", "abs", "(I)I" },
+    { javaLangMath_abs_long,
+        "Ljava/lang/Math;", "abs", "(J)J" },
+    { javaLangMath_abs_float,
+        "Ljava/lang/Math;", "abs", "(F)F" },
+    { javaLangMath_abs_double,
+        "Ljava/lang/Math;", "abs", "(D)D" },
+    { javaLangMath_min_int,
+        "Ljava/lang/Math;", "min", "(II)I" },
+    { javaLangMath_max_int,
+        "Ljava/lang/Math;", "max", "(II)I" },
+    { javaLangMath_sqrt,
+        "Ljava/lang/Math;", "sqrt", "(D)D" },
+    { javaLangMath_cos,
+        "Ljava/lang/Math;", "cos", "(D)D" },
+    { javaLangMath_sin,
+        "Ljava/lang/Math;", "sin", "(D)D" },
 
-    { javaLangFloat_floatToIntBits, "Ljava/lang/Float;", "floatToIntBits", "(F)I" },
-    { javaLangFloat_floatToRawIntBits, "Ljava/lang/Float;", "floatToRawIntBits", "(F)I" },
-    { javaLangFloat_intBitsToFloat, "Ljava/lang/Float;", "intBitsToFloat", "(I)F" },
+    { javaLangFloat_floatToIntBits,
+        "Ljava/lang/Float;", "floatToIntBits", "(F)I" },
+    { javaLangFloat_floatToRawIntBits,
+        "Ljava/lang/Float;", "floatToRawIntBits", "(F)I" },
+    { javaLangFloat_intBitsToFloat,
+        "Ljava/lang/Float;", "intBitsToFloat", "(I)F" },
 
-    { javaLangDouble_doubleToLongBits, "Ljava/lang/Double;", "doubleToLongBits", "(D)J" },
-    { javaLangDouble_doubleToRawLongBits, "Ljava/lang/Double;", "doubleToRawLongBits", "(D)J" },
-    { javaLangDouble_longBitsToDouble, "Ljava/lang/Double;", "longBitsToDouble", "(J)D" },
-
-    // These are implemented exactly the same in Math and StrictMath,
-    // so we can make the StrictMath calls fast too. Note that this
-    // isn't true in general!
-    { javaLangMath_abs_int, "Ljava/lang/StrictMath;", "abs", "(I)I" },
-    { javaLangMath_abs_long, "Ljava/lang/StrictMath;", "abs", "(J)J" },
-    { javaLangMath_abs_float, "Ljava/lang/StrictMath;", "abs", "(F)F" },
-    { javaLangMath_abs_double, "Ljava/lang/StrictMath;", "abs", "(D)D" },
-    { javaLangMath_min_int, "Ljava/lang/StrictMath;", "min", "(II)I" },
-    { javaLangMath_max_int, "Ljava/lang/StrictMath;", "max", "(II)I" },
-    { javaLangMath_sqrt, "Ljava/lang/StrictMath;", "sqrt", "(D)D" },
+    { javaLangDouble_doubleToLongBits,
+        "Ljava/lang/Double;", "doubleToLongBits", "(D)J" },
+    { javaLangDouble_doubleToRawLongBits,
+        "Ljava/lang/Double;", "doubleToRawLongBits", "(D)J" },
+    { javaLangDouble_longBitsToDouble,
+        "Ljava/lang/Double;", "longBitsToDouble", "(J)D" },
 };
 
 /*
@@ -815,7 +823,7 @@ Method* dvmFindInlinableMethod(const char* classDescriptor,
      */
     ClassObject* clazz = dvmFindClassNoInit(classDescriptor, NULL);
     if (clazz == NULL) {
-        ALOGE("dvmFindInlinableMethod: can't find class '%s'",
+        LOGE("dvmFindInlinableMethod: can't find class '%s'",
             classDescriptor);
         dvmClearException(dvmThreadSelf());
         return NULL;
@@ -832,7 +840,7 @@ Method* dvmFindInlinableMethod(const char* classDescriptor,
             methodSignature);
     }
     if (method == NULL) {
-        ALOGE("dvmFindInlinableMethod: can't find method %s.%s %s",
+        LOGE("dvmFindInlinableMethod: can't find method %s.%s %s",
             clazz->descriptor, methodName, methodSignature);
         return NULL;
     }
@@ -841,13 +849,13 @@ Method* dvmFindInlinableMethod(const char* classDescriptor,
      * Check that the method is appropriate for inlining.
      */
     if (!dvmIsFinalClass(clazz) && !dvmIsFinalMethod(method)) {
-        ALOGE("dvmFindInlinableMethod: can't inline non-final method %s.%s",
+        LOGE("dvmFindInlinableMethod: can't inline non-final method %s.%s",
             clazz->descriptor, method->name);
         return NULL;
     }
     if (dvmIsSynchronizedMethod(method) ||
             dvmIsDeclaredSynchronizedMethod(method)) {
-        ALOGE("dvmFindInlinableMethod: can't inline synchronized method %s.%s",
+        LOGE("dvmFindInlinableMethod: can't inline synchronized method %s.%s",
             clazz->descriptor, method->name);
         return NULL;
     }
@@ -883,9 +891,9 @@ Method* dvmResolveInlineNative(int opIndex)
     }
 
     gDvm.inlinedMethods[opIndex] = method;
-    IF_ALOGV() {
+    IF_LOGV() {
         char* desc = dexProtoCopyMethodDescriptor(&method->prototype);
-        ALOGV("Registered for profile: %s.%s %s",
+        LOGV("Registered for profile: %s.%s %s",
             method->clazz->descriptor, method->name, desc);
         free(desc);
     }
@@ -913,40 +921,3 @@ bool dvmPerformInlineOp4Dbg(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
     TRACE_METHOD_EXIT(self, method);
     return result;
 }
-
-#ifdef INLINE_ARG_EXPANDED
-bool dvmPerformInlineOp5Dbg(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
-    JValue* pResult, int opIndex, u4 arg4)
-{
-    Method* method = dvmResolveInlineNative(opIndex);
-    if (method == NULL) {
-        return ((InlineOp5Func)(*gDvmInlineOpsTable[opIndex].func))(arg0, arg1, arg2, arg3,
-            pResult, arg4);
-    }
-
-    Thread* self = dvmThreadSelf();
-    TRACE_METHOD_ENTER(self, method);
-    bool result = ((InlineOp5Func)(*gDvmInlineOpsTable[opIndex].func))(arg0, arg1, arg2, arg3,
-        pResult, arg4);
-    TRACE_METHOD_EXIT(self, method);
-    return result;
-}
-
-bool dvmPerformInlineOp7Dbg(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
-    JValue* pResult, int opIndex, u4 arg4, u4 arg5, u4 arg6)
-{
-    Method* method = dvmResolveInlineNative(opIndex);
-    if (method == NULL) {
-        return ((InlineOp7Func)(*gDvmInlineOpsTable[opIndex].func))(arg0, arg1, arg2, arg3,
-            pResult, arg4, arg5, arg6);
-    }
-
-    Thread* self = dvmThreadSelf();
-    TRACE_METHOD_ENTER(self, method);
-    bool result = ((InlineOp7Func)(*gDvmInlineOpsTable[opIndex].func))(arg0, arg1, arg2, arg3,
-        pResult, arg4, arg5, arg6);
-    TRACE_METHOD_EXIT(self, method);
-    return result;
-}
-#endif
-

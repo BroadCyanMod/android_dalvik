@@ -47,9 +47,7 @@ bool dvmCompilerArchVariantInit(void)
     /* Target-specific configuration */
     gDvmJit.jitTableSize = 1 << 12; // 4096
     gDvmJit.jitTableMask = gDvmJit.jitTableSize - 1;
-    if (gDvmJit.threshold == 0) {
-        gDvmJit.threshold = 40;
-    }
+    gDvmJit.threshold = 40;
     gDvmJit.codeCacheSize = 1024*1024;
 
 #if defined(WITH_SELF_VERIFICATION)
@@ -74,7 +72,7 @@ bool dvmCompilerArchVariantInit(void)
      */
     if ((offsetof(Thread, jitToInterpEntries) +
          sizeof(struct JitToInterpEntries)) >= 128) {
-        ALOGE("Thread.jitToInterpEntries size overflow");
+        LOGE("Thread.jitToInterpEntries size overflow");
         dvmAbort();
     }
 
@@ -95,7 +93,7 @@ int dvmCompilerTargetOptHint(int key)
             res = 7;
             break;
         default:
-            ALOGE("Unknown target optimization hint key: %d",key);
+            LOGE("Unknown target optimization hint key: %d",key);
             res = 0;
     }
     return res;

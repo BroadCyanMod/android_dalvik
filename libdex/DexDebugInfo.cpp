@@ -130,9 +130,9 @@ static void emitLocalCbIfLive(void *cnxt, int reg, u4 endAddress,
 }
 
 static void invalidStream(const char* classDescriptor, const DexProto* proto) {
-    IF_ALOGE() {
+    IF_LOGE() {
         char* methodDescriptor = dexProtoCopyMethodDescriptor(proto);
-        ALOGE("Invalid debug info stream. class %s; proto %s",
+        LOGE("Invalid debug info stream. class %s; proto %s",
                 classDescriptor, methodDescriptor);
         free(methodDescriptor);
     }

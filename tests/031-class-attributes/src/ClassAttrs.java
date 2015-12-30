@@ -6,7 +6,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.lang.reflect.TypeVariable;
 
 public class ClassAttrs {
     ClassAttrs() {
@@ -42,9 +41,6 @@ public class ClassAttrs {
 
         /* member, not anonymous, not local */
         printClassAttrs(MemberClass.class);
-
-        /* fancy */
-        printClassAttrs(FancyClass.class);
 
         try {
             Constructor cons;
@@ -86,8 +82,8 @@ public class ClassAttrs {
             }
             method.setAccessible(true);
         } catch (NoSuchMethodException ex) {
-            //System.err.println("getSignatureAttribute() not defined.");
-            //ex.printStackTrace();
+            System.err.println("getSignatureAttribute() not defined.");
+            ex.printStackTrace();
             return "<unknown>";
         }
 
@@ -122,6 +118,7 @@ public class ClassAttrs {
      * Dump a variety of class attributes.
      */
     public static void printClassAttrs(Class clazz) {
+        final boolean WORKING = false;
         Class clazz2;
 
         System.out.println("***** " + clazz + ":");
@@ -137,7 +134,7 @@ public class ClassAttrs {
 
         System.out.println("  super: "
             + clazz.getSuperclass());
-        System.out.println("  genericSuperclass: "
+        if (WORKING) System.out.println("  genericSuperclass: "
             + clazz.getGenericSuperclass());
         System.out.println("  declaring: "
             + clazz.getDeclaringClass());
@@ -176,12 +173,8 @@ public class ClassAttrs {
         System.out.println("  isSynthetic: "
             + clazz.isSynthetic());
 
-        System.out.println("  genericInterfaces: "
+        if (WORKING) System.out.println("  genericInterfaces: "
             + stringifyTypeArray(clazz.getGenericInterfaces()));
-
-        TypeVariable<Class<?>>[] typeParameters = clazz.getTypeParameters();
-        System.out.println("  typeParameters: "
-            + stringifyTypeArray(typeParameters));
     }
 
     /*

@@ -471,7 +471,7 @@ struct ClassObject : Object {
 
     /* static fields */
     int             sfieldCount;
-    StaticField     sfields[0]; /* MUST be last item */
+    StaticField     sfields[]; /* MUST be last item */
 };
 
 /*
