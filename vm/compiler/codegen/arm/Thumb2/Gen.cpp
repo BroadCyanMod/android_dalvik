@@ -13,66 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 /*
- * This file contains codegen for the Thumb2 ISA and is intended to be
+ * This file contains codegen for the Thumb ISA and is intended to be
  * includes by:
  *
  *        Codegen-$(TARGET_ARCH_VARIANT).c
  *
  */
-
-/*
- * Reserve 6 bytes at the beginning of the trace
- *        +----------------------------+
- *        | prof count addr (4 bytes)  |
- *        +----------------------------+
- *        | chain cell offset (2 bytes)|
- *        +----------------------------+
- *
- * ...and then code to increment the execution
- *
- * For continuous profiling (10 bytes)
- *       ldr   r0, [pc-8]   @ get prof count addr    [4 bytes]
- *       ldr   r1, [r0]     @ load counter           [2 bytes]
- *       add   r1, #1       @ increment              [2 bytes]
- *       str   r1, [r0]     @ store                  [2 bytes]
- *
- * For periodic profiling (4 bytes)
- *       call  TEMPLATE_PERIODIC_PROFILING
- *
- * and return the size (in bytes) of the generated code.
- */
-
-static int genTraceProfileEntry(CompilationUnit *cUnit)
-{
-    intptr_t addr = (intptr_t)dvmJitNextTraceCounter();
-    assert(__BYTE_ORDER == __LITTLE_ENDIAN);
-    newLIR1(cUnit, kArm16BitData, addr & 0xffff);
-    newLIR1(cUnit, kArm16BitData, (addr >> 16) & 0xffff);
-    cUnit->chainCellOffsetLIR =
-        (LIR *) newLIR1(cUnit, kArm16BitData, CHAIN_CELL_OFFSET_TAG);
-    cUnit->headerSize = 6;
-    if ((gDvmJit.profileMode == kTraceProfilingContinuous) ||
-        (gDvmJit.profileMode == kTraceProfilingDisabled)) {
-        /* Thumb[2] instruction used directly here to ensure correct size */
-        newLIR2(cUnit, kThumb2LdrPcReln12, r0, 8);
-        newLIR3(cUnit, kThumbLdrRRI5, r1, r0, 0);
-        newLIR2(cUnit, kThumbAddRI8, r1, 1);
-        newLIR3(cUnit, kThumbStrRRI5, r1, r0, 0);
-        return 10;
-    } else {
-        int opcode = TEMPLATE_PERIODIC_PROFILING;
-        newLIR2(cUnit, kThumbBlx1,
-            (int) gDvmJit.codeCache + templateEntryOffsets[opcode],
-            (int) gDvmJit.codeCache + templateEntryOffsets[opcode]);
-        newLIR2(cUnit, kThumbBlx2,
-            (int) gDvmJit.codeCache + templateEntryOffsets[opcode],
-            (int) gDvmJit.codeCache + templateEntryOffsets[opcode]);
-        return 4;
-    }
-}
-
 static void genNegFloat(CompilationUnit *cUnit, RegLocation rlDest,
                         RegLocation rlSrc)
 {
@@ -82,7 +29,6 @@ static void genNegFloat(CompilationUnit *cUnit, RegLocation rlDest,
     newLIR2(cUnit, kThumb2Vnegs, rlResult.lowReg, rlSrc.lowReg);
     storeValue(cUnit, rlDest, rlResult);
 }
-
 static void genNegDouble(CompilationUnit *cUnit, RegLocation rlDest,
                          RegLocation rlSrc)
 {
@@ -93,7 +39,6 @@ static void genNegDouble(CompilationUnit *cUnit, RegLocation rlDest,
             S2D(rlSrc.lowReg, rlSrc.highReg));
     storeValueWide(cUnit, rlDest, rlResult);
 }
-
 /*
  * To avoid possible conflicts, we use a lot of temps here.  Note that
  * our usage of Thumb2 instruction forms avoids the problems with register
@@ -106,23 +51,19 @@ static void genMulLong(CompilationUnit *cUnit, RegLocation rlDest,
     int resLo = dvmCompilerAllocTemp(cUnit);
     int resHi = dvmCompilerAllocTemp(cUnit);
     int tmp1 = dvmCompilerAllocTemp(cUnit);
-
     rlSrc1 = loadValueWide(cUnit, rlSrc1, kCoreReg);
     rlSrc2 = loadValueWide(cUnit, rlSrc2, kCoreReg);
-
     newLIR3(cUnit, kThumb2MulRRR, tmp1, rlSrc2.lowReg, rlSrc1.highReg);
     newLIR4(cUnit, kThumb2Umull, resLo, resHi, rlSrc2.lowReg, rlSrc1.lowReg);
     newLIR4(cUnit, kThumb2Mla, tmp1, rlSrc1.lowReg, rlSrc2.highReg, tmp1);
     newLIR4(cUnit, kThumb2AddRRR, resHi, tmp1, resHi, 0);
     dvmCompilerFreeTemp(cUnit, tmp1);
-
     rlResult = dvmCompilerGetReturnWide(cUnit);  // Just as a template, will patch
     rlResult.lowReg = resLo;
     rlResult.highReg = resHi;
     storeValueWide(cUnit, rlDest, rlResult);
 }
-
-static void genLong3Addr(CompilationUnit *cUnit, MIR *mir, OpKind firstOp,
+static void genLong3Addr(CompilationUnit *cUnit, OpKind firstOp,
                          OpKind secondOp, RegLocation rlDest,
                          RegLocation rlSrc1, RegLocation rlSrc2)
 {
@@ -135,25 +76,30 @@ static void genLong3Addr(CompilationUnit *cUnit, MIR *mir, OpKind firstOp,
                 rlSrc2.highReg);
     storeValueWide(cUnit, rlDest, rlResult);
 }
-
 void dvmCompilerInitializeRegAlloc(CompilationUnit *cUnit)
 {
+    int i;
     int numTemps = sizeof(coreTemps)/sizeof(int);
     int numFPTemps = sizeof(fpTemps)/sizeof(int);
-    RegisterPool *pool = (RegisterPool *)dvmCompilerNew(sizeof(*pool), true);
+    RegisterPool *pool = dvmCompilerNew(sizeof(*pool), true);
     cUnit->regPool = pool;
     pool->numCoreTemps = numTemps;
-    pool->coreTemps = (RegisterInfo *)
+    pool->coreTemps =
             dvmCompilerNew(numTemps * sizeof(*cUnit->regPool->coreTemps), true);
     pool->numFPTemps = numFPTemps;
-    pool->FPTemps = (RegisterInfo *)
+    pool->FPTemps =
             dvmCompilerNew(numFPTemps * sizeof(*cUnit->regPool->FPTemps), true);
+    pool->numCoreRegs = 0;
+    pool->coreRegs = NULL;
+    pool->numFPRegs = 0;
+    pool->FPRegs = NULL;
     dvmCompilerInitPool(pool->coreTemps, coreTemps, pool->numCoreTemps);
     dvmCompilerInitPool(pool->FPTemps, fpTemps, pool->numFPTemps);
+    dvmCompilerInitPool(pool->coreRegs, NULL, 0);
+    dvmCompilerInitPool(pool->FPRegs, NULL, 0);
     pool->nullCheckedRegs =
         dvmCompilerAllocBitVector(cUnit->numSSARegs, false);
 }
-
 /*
  * Generate a Thumb2 IT instruction, which can nullify up to
  * four subsequent instructions based on a condition and its
@@ -165,7 +111,7 @@ void dvmCompilerInitializeRegAlloc(CompilationUnit *cUnit)
  * is not met.
  */
 static ArmLIR *genIT(CompilationUnit *cUnit, ArmConditionCode code,
-                     const char *guide)
+                     char *guide)
 {
     int mask;
     int condBit = code & 1;
@@ -173,7 +119,6 @@ static ArmLIR *genIT(CompilationUnit *cUnit, ArmConditionCode code,
     int mask3 = 0;
     int mask2 = 0;
     int mask1 = 0;
-
     //Note: case fallthroughs intentional
     switch(strlen(guide)) {
         case 3:
@@ -186,14 +131,13 @@ static ArmLIR *genIT(CompilationUnit *cUnit, ArmConditionCode code,
         case 0:
             break;
         default:
-            ALOGE("Jit: bad case in genIT");
-            dvmCompilerAbort(cUnit);
+            assert(0);
+            dvmAbort();
     }
     mask = (mask3 << 3) | (mask2 << 2) | (mask1 << 1) |
            (1 << (3 - strlen(guide)));
     return newLIR2(cUnit, kThumb2It, code, mask);
 }
-
 /* Export the Dalvik PC assicated with an instruction to the StackSave area */
 static ArmLIR *genExportPC(CompilationUnit *cUnit, MIR *mir)
 {
@@ -201,12 +145,11 @@ static ArmLIR *genExportPC(CompilationUnit *cUnit, MIR *mir)
     int offset = offsetof(StackSaveArea, xtra.currentPc);
     int rDPC = dvmCompilerAllocTemp(cUnit);
     res = loadConstant(cUnit, rDPC, (int) (cUnit->method->insns + mir->offset));
-    newLIR3(cUnit, kThumb2StrRRI8Predec, rDPC, r5FP,
+    newLIR3(cUnit, kThumb2StrRRI8Predec, rDPC, rFP,
             sizeof(StackSaveArea) - offset);
     dvmCompilerFreeTemp(cUnit, rDPC);
     return res;
 }
-
 /*
  * Handle simple case (thin lock) inline.  If it's complicated, bail
  * out to the heavyweight lock/unlock routines.  We'll use dedicated
@@ -237,17 +180,18 @@ static ArmLIR *genExportPC(CompilationUnit *cUnit, MIR *mir)
 static void genMonitorEnter(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
+    bool enter = (mir->dalvikInsn.opCode == OP_MONITOR_ENTER);
     ArmLIR *target;
     ArmLIR *hopTarget;
     ArmLIR *branch;
     ArmLIR *hopBranch;
-
     assert(LW_SHAPE_THIN == 0);
     loadValueDirectFixed(cUnit, rlSrc, r1);  // Get obj
     dvmCompilerLockAllTemps(cUnit);  // Prepare for explicit register usage
     dvmCompilerFreeTemp(cUnit, r4PC);  // Free up r4 for general use
+    loadWordDisp(cUnit, rGLUE, offsetof(InterpState, self), r0); // Get self
     genNullCheck(cUnit, rlSrc.sRegLow, r1, mir->offset, NULL);
-    loadWordDisp(cUnit, r6SELF, offsetof(Thread, threadId), r3); // Get threadId
+    loadWordDisp(cUnit, r0, offsetof(Thread, threadId), r3); // Get threadId
     newLIR3(cUnit, kThumb2Ldrex, r2, r1,
             offsetof(Object, lock) >> 2); // Get object->lock
     opRegImm(cUnit, kOpLsl, r3, LW_LOCK_OWNER_SHIFT); // Align owner
@@ -257,32 +201,30 @@ static void genMonitorEnter(CompilationUnit *cUnit, MIR *mir)
             LW_LOCK_OWNER_SHIFT - 1);
     hopBranch = newLIR2(cUnit, kThumb2Cbnz, r2, 0);
     newLIR4(cUnit, kThumb2Strex, r2, r3, r1, offsetof(Object, lock) >> 2);
-    dvmCompilerGenMemBarrier(cUnit, kSY);
     branch = newLIR2(cUnit, kThumb2Cbz, r2, 0);
-
     hopTarget = newLIR0(cUnit, kArmPseudoTargetLabel);
     hopTarget->defMask = ENCODE_ALL;
     hopBranch->generic.target = (LIR *)hopTarget;
-
+    // Clear the lock
+    ArmLIR *inst = newLIR0(cUnit, kThumb2Clrex);
+    // ...and make it a scheduling barrier
+    inst->defMask = ENCODE_ALL;
     // Export PC (part 1)
     loadConstant(cUnit, r3, (int) (cUnit->method->insns + mir->offset));
-
     /* Get dPC of next insn */
     loadConstant(cUnit, r4PC, (int)(cUnit->method->insns + mir->offset +
-                 dexGetWidthFromOpcode(OP_MONITOR_ENTER)));
+                 dexGetInstrWidthAbs(gDvm.instrWidth, OP_MONITOR_ENTER)));
     // Export PC (part 2)
-    newLIR3(cUnit, kThumb2StrRRI8Predec, r3, r5FP,
+    newLIR3(cUnit, kThumb2StrRRI8Predec, r3, rFP,
             sizeof(StackSaveArea) -
             offsetof(StackSaveArea, xtra.currentPc));
     /* Call template, and don't return */
-    genRegCopy(cUnit, r0, r6SELF);
     genDispatchToHandler(cUnit, TEMPLATE_MONITOR_ENTER);
     // Resume here
     target = newLIR0(cUnit, kArmPseudoTargetLabel);
     target->defMask = ENCODE_ALL;
     branch->generic.target = (LIR *)target;
 }
-
 /*
  * For monitor unlock, we don't have to use ldrex/strex.  Once
  * we've determined that the lock is thin and that we own it with
@@ -296,61 +238,54 @@ static void genMonitorExit(CompilationUnit *cUnit, MIR *mir)
     ArmLIR *branch;
     ArmLIR *hopTarget;
     ArmLIR *hopBranch;
-
     assert(LW_SHAPE_THIN == 0);
     loadValueDirectFixed(cUnit, rlSrc, r1);  // Get obj
     dvmCompilerLockAllTemps(cUnit);  // Prepare for explicit register usage
     dvmCompilerFreeTemp(cUnit, r4PC);  // Free up r4 for general use
+    loadWordDisp(cUnit, rGLUE, offsetof(InterpState, self), r0); // Get self
     genNullCheck(cUnit, rlSrc.sRegLow, r1, mir->offset, NULL);
     loadWordDisp(cUnit, r1, offsetof(Object, lock), r2); // Get object->lock
-    loadWordDisp(cUnit, r6SELF, offsetof(Thread, threadId), r3); // Get threadId
+    loadWordDisp(cUnit, r0, offsetof(Thread, threadId), r3); // Get threadId
     // Is lock unheld on lock or held by us (==threadId) on unlock?
     opRegRegImm(cUnit, kOpAnd, r7, r2,
                 (LW_HASH_STATE_MASK << LW_HASH_STATE_SHIFT));
+    opRegImm(cUnit, kOpLsl, r3, LW_LOCK_OWNER_SHIFT); // Align owner
     newLIR3(cUnit, kThumb2Bfc, r2, LW_HASH_STATE_SHIFT,
             LW_LOCK_OWNER_SHIFT - 1);
-    opRegRegRegShift(cUnit, kOpSub, r2, r2, r3, encodeShift(kArmLsl, LW_LOCK_OWNER_SHIFT)); // Align owner
+    opRegReg(cUnit, kOpSub, r2, r3);
     hopBranch = opCondBranch(cUnit, kArmCondNe);
-    dvmCompilerGenMemBarrier(cUnit, kSY);
     storeWordDisp(cUnit, r1, offsetof(Object, lock), r7);
     branch = opNone(cUnit, kOpUncondBr);
-
     hopTarget = newLIR0(cUnit, kArmPseudoTargetLabel);
     hopTarget->defMask = ENCODE_ALL;
     hopBranch->generic.target = (LIR *)hopTarget;
-
     // Export PC (part 1)
     loadConstant(cUnit, r3, (int) (cUnit->method->insns + mir->offset));
-
-    LOAD_FUNC_ADDR(cUnit, r7, (int)dvmUnlockObject);
-    genRegCopy(cUnit, r0, r6SELF);
+    loadConstant(cUnit, r7, (int)dvmUnlockObject);
     // Export PC (part 2)
-    newLIR3(cUnit, kThumb2StrRRI8Predec, r3, r5FP,
+    newLIR3(cUnit, kThumb2StrRRI8Predec, r3, rFP,
             sizeof(StackSaveArea) -
             offsetof(StackSaveArea, xtra.currentPc));
     opReg(cUnit, kOpBlx, r7);
-    /* Did we throw? */
-    ArmLIR *branchOver = genCmpImmBranch(cUnit, kArmCondNe, r0, 0);
+    opRegImm(cUnit, kOpCmp, r0, 0); /* Did we throw? */
+    ArmLIR *branchOver = opCondBranch(cUnit, kArmCondNe);
     loadConstant(cUnit, r0,
                  (int) (cUnit->method->insns + mir->offset +
-                 dexGetWidthFromOpcode(OP_MONITOR_EXIT)));
+                 dexGetInstrWidthAbs(gDvm.instrWidth, OP_MONITOR_EXIT)));
     genDispatchToHandler(cUnit, TEMPLATE_THROW_EXCEPTION_COMMON);
-
     // Resume here
     target = newLIR0(cUnit, kArmPseudoTargetLabel);
     target->defMask = ENCODE_ALL;
     branch->generic.target = (LIR *)target;
     branchOver->generic.target = (LIR *) target;
 }
-
 static void genMonitor(CompilationUnit *cUnit, MIR *mir)
 {
-    if (mir->dalvikInsn.opcode == OP_MONITOR_ENTER)
+    if (mir->dalvikInsn.opCode == OP_MONITOR_ENTER)
         genMonitorEnter(cUnit, mir);
     else
         genMonitorExit(cUnit, mir);
 }
-
 /*
  * 64-bit 3way compare function.
  *     mov   r7, #-1
@@ -382,26 +317,20 @@ static void genCmpLong(CompilationUnit *cUnit, MIR *mir,
     ArmLIR *branch2 = opCondBranch(cUnit, kArmCondGt);
     opRegRegReg(cUnit, kOpSub, rlTemp.lowReg, rlSrc1.lowReg, rlSrc2.lowReg);
     ArmLIR *branch3 = opCondBranch(cUnit, kArmCondEq);
-
     genIT(cUnit, kArmCondHi, "E");
     newLIR2(cUnit, kThumb2MovImmShift, rlTemp.lowReg, modifiedImmediate(-1));
     loadConstant(cUnit, rlTemp.lowReg, 1);
     genBarrier(cUnit);
-
     target2 = newLIR0(cUnit, kArmPseudoTargetLabel);
     target2->defMask = -1;
     opRegReg(cUnit, kOpNeg, rlTemp.lowReg, rlTemp.lowReg);
-
     target1 = newLIR0(cUnit, kArmPseudoTargetLabel);
     target1->defMask = -1;
-
     storeValue(cUnit, rlDest, rlTemp);
-
     branch1->generic.target = (LIR *)target1;
     branch2->generic.target = (LIR *)target2;
     branch3->generic.target = branch1->generic.target;
 }
-
 static bool genInlinedAbsFloat(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
@@ -410,9 +339,8 @@ static bool genInlinedAbsFloat(CompilationUnit *cUnit, MIR *mir)
     RegLocation rlResult = dvmCompilerEvalLoc(cUnit, rlDest, kFPReg, true);
     newLIR2(cUnit, kThumb2Vabss, rlResult.lowReg, rlSrc.lowReg);
     storeValue(cUnit, rlDest, rlResult);
-    return false;
+    return true;
 }
-
 static bool genInlinedAbsDouble(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlSrc = dvmCompilerGetSrcWide(cUnit, mir, 0, 1);
@@ -422,9 +350,8 @@ static bool genInlinedAbsDouble(CompilationUnit *cUnit, MIR *mir)
     newLIR2(cUnit, kThumb2Vabsd, S2D(rlResult.lowReg, rlResult.highReg),
             S2D(rlSrc.lowReg, rlSrc.highReg));
     storeValueWide(cUnit, rlDest, rlResult);
-    return false;
+    return true;
 }
-
 static bool genInlinedMinMaxInt(CompilationUnit *cUnit, MIR *mir, bool isMin)
 {
     RegLocation rlSrc1 = dvmCompilerGetSrc(cUnit, mir, 0);
@@ -441,7 +368,6 @@ static bool genInlinedMinMaxInt(CompilationUnit *cUnit, MIR *mir, bool isMin)
     storeValue(cUnit, rlDest, rlResult);
     return false;
 }
-
 static void genMultiplyByTwoBitMultiplier(CompilationUnit *cUnit,
         RegLocation rlSrc, RegLocation rlResult, int lit,
         int firstBit, int secondBit)
@@ -450,155 +376,5 @@ static void genMultiplyByTwoBitMultiplier(CompilationUnit *cUnit,
                      encodeShift(kArmLsl, secondBit - firstBit));
     if (firstBit != 0) {
         opRegRegImm(cUnit, kOpLsl, rlResult.lowReg, rlResult.lowReg, firstBit);
-    }
-}
-
-static void genMultiplyByShiftAndReverseSubtract(CompilationUnit *cUnit,
-        RegLocation rlSrc, RegLocation rlResult, int lit)
-{
-    newLIR4(cUnit, kThumb2RsbRRR, rlResult.lowReg, rlSrc.lowReg, rlSrc.lowReg,
-            encodeShift(kArmLsl, lit));
-}
-
-/*
- * Generate array load.
- * For wide array access using scale, combine add with shift.
- * When using offset, use ldr instruction with offset capabilities.
- */
-static void genArrayGet(CompilationUnit *cUnit, MIR *mir, OpSize size,
-                        RegLocation rlArray, RegLocation rlIndex,
-                        RegLocation rlDest, int scale)
-{
-    RegisterClass regClass = dvmCompilerRegClassBySize(size);
-    int lenOffset = OFFSETOF_MEMBER(ArrayObject, length);
-    int dataOffset = OFFSETOF_MEMBER(ArrayObject, contents);
-    RegLocation rlResult;
-    rlArray = loadValue(cUnit, rlArray, kCoreReg);
-    rlIndex = loadValue(cUnit, rlIndex, kCoreReg);
-    int regPtr;
-
-    /* null object? */
-    ArmLIR * pcrLabel = NULL;
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_NULL_CHECK)) {
-        pcrLabel = genNullCheck(cUnit, rlArray.sRegLow,
-                                rlArray.lowReg, mir->offset, NULL);
-    }
-
-    regPtr = dvmCompilerAllocTemp(cUnit);
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_RANGE_CHECK)) {
-        int regLen = dvmCompilerAllocTemp(cUnit);
-        /* Get len */
-        loadWordDisp(cUnit, rlArray.lowReg, lenOffset, regLen);
-        genBoundsCheck(cUnit, rlIndex.lowReg, regLen, mir->offset,
-                       pcrLabel);
-        dvmCompilerFreeTemp(cUnit, regLen);
-    }
-    if ((size == kLong) || (size == kDouble)) {
-        int rNewIndex = dvmCompilerAllocTemp(cUnit);
-        if (scale) {
-            /* Combine add with shift */
-            opRegRegRegShift(cUnit, kOpAdd, rNewIndex, rlArray.lowReg,
-                             rlIndex.lowReg, encodeShift(kArmLsl, scale));
-        } else {
-            opRegRegReg(cUnit, kOpAdd, rNewIndex, regPtr, rlIndex.lowReg);
-        }
-        rlResult = dvmCompilerEvalLoc(cUnit, rlDest, regClass, true);
-
-        HEAP_ACCESS_SHADOW(true);
-        /* Use data offset */
-        loadPair(cUnit, rNewIndex, dataOffset, rlResult.lowReg, rlResult.highReg);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, rNewIndex);
-        dvmCompilerFreeTemp(cUnit, regPtr);
-        storeValueWide(cUnit, rlDest, rlResult);
-    } else {
-        /* regPtr -> array data */
-        opRegRegImm(cUnit, kOpAdd, regPtr, rlArray.lowReg, dataOffset);
-
-        rlResult = dvmCompilerEvalLoc(cUnit, rlDest, regClass, true);
-
-        HEAP_ACCESS_SHADOW(true);
-        loadBaseIndexed(cUnit, regPtr, rlIndex.lowReg, rlResult.lowReg,
-                        scale, size);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, regPtr);
-        storeValue(cUnit, rlDest, rlResult);
-    }
-}
-
-/*
- * Generate array store.
- * For wide array access using scale, combine add with shift.
- * When using offset, use str instruction with offset capabilities.
- */
-static void genArrayPut(CompilationUnit *cUnit, MIR *mir, OpSize size,
-                        RegLocation rlArray, RegLocation rlIndex,
-                        RegLocation rlSrc, int scale)
-{
-    RegisterClass regClass = dvmCompilerRegClassBySize(size);
-    int lenOffset = OFFSETOF_MEMBER(ArrayObject, length);
-    int dataOffset = OFFSETOF_MEMBER(ArrayObject, contents);
-
-    int regPtr;
-    rlArray = loadValue(cUnit, rlArray, kCoreReg);
-    rlIndex = loadValue(cUnit, rlIndex, kCoreReg);
-
-    if (dvmCompilerIsTemp(cUnit, rlArray.lowReg)) {
-        dvmCompilerClobber(cUnit, rlArray.lowReg);
-        regPtr = rlArray.lowReg;
-    } else {
-        regPtr = dvmCompilerAllocTemp(cUnit);
-        genRegCopy(cUnit, regPtr, rlArray.lowReg);
-    }
-
-    /* null object? */
-    ArmLIR * pcrLabel = NULL;
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_NULL_CHECK)) {
-        pcrLabel = genNullCheck(cUnit, rlArray.sRegLow, rlArray.lowReg,
-                                mir->offset, NULL);
-    }
-
-    if (!(mir->OptimizationFlags & MIR_IGNORE_RANGE_CHECK)) {
-        int regLen = dvmCompilerAllocTemp(cUnit);
-        //NOTE: max live temps(4) here.
-        /* Get len */
-        loadWordDisp(cUnit, rlArray.lowReg, lenOffset, regLen);
-        genBoundsCheck(cUnit, rlIndex.lowReg, regLen, mir->offset,
-                       pcrLabel);
-        dvmCompilerFreeTemp(cUnit, regLen);
-    }
-    /* at this point, regPtr points to array, 2 live temps */
-    if ((size == kLong) || (size == kDouble)) {
-        //TODO: need specific wide routine that can handle fp regs
-        int rNewIndex = dvmCompilerAllocTemp(cUnit);
-        if (scale) {
-            opRegRegRegShift(cUnit, kOpAdd, rNewIndex, rlArray.lowReg,
-                             rlIndex.lowReg, encodeShift(kArmLsl, scale));
-        } else {
-            opRegRegReg(cUnit, kOpAdd, rNewIndex, regPtr, rlIndex.lowReg);
-        }
-        rlSrc = loadValueWide(cUnit, rlSrc, regClass);
-
-        HEAP_ACCESS_SHADOW(true);
-        storePair(cUnit, rNewIndex, dataOffset, rlSrc.lowReg, rlSrc.highReg);
-        HEAP_ACCESS_SHADOW(false);
-
-        dvmCompilerFreeTemp(cUnit, rNewIndex);
-        dvmCompilerFreeTemp(cUnit, regPtr);
-    } else {
-        /* regPtr -> array data */
-        opRegImm(cUnit, kOpAdd, regPtr, dataOffset);
-
-        rlSrc = loadValue(cUnit, rlSrc, regClass);
-
-        HEAP_ACCESS_SHADOW(true);
-        storeBaseIndexed(cUnit, regPtr, rlIndex.lowReg, rlSrc.lowReg,
-                         scale, size);
-        HEAP_ACCESS_SHADOW(false);
     }
 }
